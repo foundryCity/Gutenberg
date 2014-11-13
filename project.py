@@ -13,6 +13,8 @@ from pyspark.mllib.util import MLUtils
 # from datetime import datetime  #, time, timedelta
 from time import time
 from pyspark import SparkContext
+from pyspark.conf import SparkConf
+from pyspark.storagelevel import StorageLevel
 import inspect
 import collections
 import os
@@ -422,7 +424,16 @@ if __name__ == "__main__":
     validateInput()
     filehandle = open('out.txt', 'a')
 
-    sc = SparkContext(appName="project")
+
+    sparkConf = SparkConf()
+    sparkConf.setMaster("local").setAppName("project")
+    sparkConf.set
+    print("spark.app.name {}".format(sparkConf.get('spark.app.name')))
+    print("spark.master {}".format(sparkConf.get('spark.master')))
+    print("spark.executor.extraJavaOptions {}".format(sparkConf.get('executor.extraJavaOptions')))
+    print("sparkConf.toDebugString() {}".format(sparkConf.toDebugString()))
+
+    sc = SparkContext(conf=sparkConf)
    # stop_list = stopList(sys.argv[2]) if len(sys.argv)>2 else []
   #  line_processing = stopList(sys.argv[3]) if len(sys.argv)>3 else None
 
@@ -434,6 +445,7 @@ if __name__ == "__main__":
     textPath = parsed_args['t'] if 't' in parsed_args else sys.argv[1]
     line_processing = parsed_args['l'] if 'l' in parsed_args else None
     stop_list = parsed_args['s'] if 's' in parsed_args else []
+    count_intermediates = parsed_args['c'] if 'c' in parsed_args else None
 
 
 
@@ -463,16 +475,18 @@ if __name__ == "__main__":
 
         bigRDD = rddOfWholeTextFileRDDs(textPath)
 
-        filePrint ("bigRDD.count {}".format(bigRDD.count()),filehandle) #515
+        if (count_intermediates):
+            filePrint ("bigRDD.count {}".format(bigRDD.count()),filehandle) #515
 
         logTimeIntervalWithMsg("starting rddWithHeadersRemovedIndexedByID",filehandle)
 
 
         bigRDD = rddWithHeadersRemovedIndexedByID(bigRDD)
-        filePrint ("rddWithHeadersRemovedIndexedByID.count {}".format(bigRDD.count()),filehandle) #395
+        if (count_intermediates):
+             filePrint ("rddWithHeadersRemovedIndexedByID.count {}".format(bigRDD.count()),filehandle) #395
         #remove duplicates
         bigRDD = bigRDD.reduceByKey(lambda x,y: x)
-        filePrint ("reduceByKey.count {}".format(bigRDD.count()),filehandle) #395
+        #filePrint ("reduceByKey.count {}".format(bigRDD.count()),filehandle) #395
         logTimeIntervalWithMsg("starting processedByFileRDD",filehandle)
 
         processedByFileRDD = processRDD(bigRDD,stop_list)
