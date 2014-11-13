@@ -479,7 +479,7 @@ if __name__ == "__main__":
         logTimeIntervalWithMsg("ended processedByFileRDD",filehandle)
 
         #filePrint ("processedByFileRDD {}".format(processedByFileRDD.take(1)),filehandle)
-        filePrint ("found texts {}".format(processedByFileRDD.take(1)),filehandle) #161
+        filePrint ("found texts {}".format(processedByFileRDD.count()),filehandle) #161
 
 
 
