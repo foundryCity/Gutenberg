@@ -15,6 +15,7 @@ import os
 import sys
 import traceback
 from tempfile import NamedTemporaryFile
+import tempfile
 
 '''DEBUGGING'''
 
@@ -538,7 +539,7 @@ if __name__ == "__main__":
 
     '''... save it to disk for later use.'''
 
-    pickle_of_word_counts_per_file = NamedTemporaryFile(delete=True)
+    pickle_of_word_counts_per_file = NamedTemporaryFile(delete=False)
     pickle_of_word_counts_per_file.close()
     rdd.saveAsPickleFile(pickle_of_word_counts_per_file.name, 3)
 
