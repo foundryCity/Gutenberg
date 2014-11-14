@@ -499,7 +499,7 @@ if __name__ == "__main__":
 
 
     sparkConf = SparkConf()
-    sparkConf.setMaster("local").setAppName("project")
+    sparkConf.setAppName("project")
     print("spark.app.name {}".format(sparkConf.get('spark.app.name')))
     print("spark.master {}".format(sparkConf.get('spark.master')))
     print("spark.executor.extraJavaOptions {}".format(sparkConf.get('executor.extraJavaOptions')))
