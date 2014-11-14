@@ -364,7 +364,7 @@ def idfFromWordCountsPerFile(rdd):
     '''
     file, (word,count..)
     '''
-    new_rdd = rdd.map(lambda x: x[])
+    #new_rdd = rdd.map(lambda x: x[])
 
 def rddOfWholeTextFileRDDs(path):
     '''
