@@ -466,7 +466,11 @@ def one_a_to_d_by_file(textPath):
     filePrint ("found texts {}".format(processedByFileRDD.count())) #161
     return processedByFileRDD
 
-
+def pickle(rdd):
+    tmp = NamedTemporaryFile(delete=True)
+    tmp.close()
+    rdd.saveAsPickleFile(tmp.name,3)
+    return tmp.name
 
 ' THE MAIN LOOP '
 
@@ -542,6 +546,8 @@ if __name__ == "__main__":
     pickle_of_word_counts_per_file = NamedTemporaryFile(delete=True)
     pickle_of_word_counts_per_file.close()
     rdd.saveAsPickleFile(pickle_of_word_counts_per_file.name, 3)
+
+    pickle(rdd)
 
     print("tmpFile{}".format(pickle_of_word_counts_per_file))
 
