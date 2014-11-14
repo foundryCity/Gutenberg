@@ -499,7 +499,7 @@ if __name__ == "__main__":
 
 
     sparkConf = SparkConf()
-    sparkConf.setAppName("project")
+    sparkConf.setMaster("local[4]").setAppName("project")
     print("spark.app.name {}".format(sparkConf.get('spark.app.name')))
     print("spark.master {}".format(sparkConf.get('spark.master')))
     print("spark.executor.extraJavaOptions {}".format(sparkConf.get('executor.extraJavaOptions')))
@@ -546,8 +546,6 @@ if __name__ == "__main__":
     pickle_of_word_counts_per_file = NamedTemporaryFile(delete=True)
     pickle_of_word_counts_per_file.close()
     rdd.saveAsPickleFile(pickle_of_word_counts_per_file.name, 3)
-
-    pickle(rdd)
 
     print("tmpFile{}".format(pickle_of_word_counts_per_file))
 
