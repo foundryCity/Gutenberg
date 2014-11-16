@@ -142,6 +142,15 @@ def stopList(stop_file_path):
         result = stop_file_rdd.flatMap (lambda x: re.split('\W+',x)).collect()
     return result
 
+def numberOfInputFiles(path):
+    count = 0
+    (location, folders, files) = walk(path).next()
+    count += len(files)
+    for folder in folders:
+        sub_path = os.path.join(location, folder)
+        count += numberOfInputFiles(sub_path)
+    return count
+
 '''OUTPUT'''
 
 def pickled(rdd):
@@ -217,7 +226,7 @@ def englishRegex():
 
 def germanRegex():
     """
-    regex to match English texts
+    regex to match German texts
     uses 'Language:' attribution in header
     :return:
     """
@@ -225,6 +234,32 @@ def germanRegex():
 
     regex = re.compile(
         "^(Language: German)"
+        ,re.MULTILINE)
+    return regex
+
+def frenchRegex():
+    """
+    regex to match French texts
+    uses 'Language:' attribution in header
+    :return:
+    """
+    logfuncWithArgs()
+
+    regex = re.compile(
+        "^(Language: French)"
+        ,re.MULTILINE)
+    return regex
+
+def esperantoRegex():
+    """
+    regex to match Esperanto texts
+    uses 'Language:' attribution in header
+    :return:
+    """
+    logfuncWithArgs()
+
+    regex = re.compile(
+        "^(Language: Esperanto)"
         ,re.MULTILINE)
     return regex
 
@@ -681,12 +716,17 @@ if __name__ == "__main__":
 
     print (parsed_args)
     text_path = parsed_args['t'] if 't' in parsed_args else sys.argv[1]
-    line_processing = parsed_args['l'] if 'l' in parsed_args else None
     stop_list_path = parsed_args['s'] if 's' in parsed_args else []
-    count_intermediates = parsed_args['c'] if 'c' in parsed_args else None
     normalise_word_frequencies = parsed_args['n'] if 'n' in parsed_args else None
-    filter_english_texts = parsed_args['e'] if 'e' in parsed_args else None
+    filter_files = parsed_args['f'] if 'f' in parsed_args else None
     max_file_size = int(parsed_args['max']) if 'max'in parsed_args else None
+    '''
+     example usages
+     spark-submit  --driver-memory 8G project.py t=data/text_party s=stopwords_en.txt f=1
+     spark-submit project.py t=data/text_party s=stopwords_en.txt n=1 f=1 max=100000
+
+    '''
+
 
     '''
     a) Start by traversing the text-part directory ,
@@ -704,12 +744,15 @@ if __name__ == "__main__":
     save it to disk for later use.
 
     '''
-    if filter_english_texts:
+    if filter_files:
         regex_filters = regexFilters()
     else:
         regex_filters=None
 
     rx_id = idRegex()
+    number_of_input_files = numberOfInputFiles(text_path)
+    logTimeIntervalWithMsg ("input files: {} ".format(number_of_input_files)) #161
+
     if max_file_size:
         # line-by-line processing: this is slower but allows us to filter for maximum file sizes
         rx_header = headerRegex()
@@ -742,7 +785,7 @@ if __name__ == "__main__":
 
     logTimeIntervalWithMsg ("finished normalising") #161
 
-    logTimeIntervalWithMsg ("found texts {}".format(rdd.count())) #161
+    logTimeIntervalWithMsg ("input files: {} found texts: {}".format(number_of_input_files,rdd.count())) #161
 
 
     pickle_file = pickled(rdd)
