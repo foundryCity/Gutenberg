@@ -10,12 +10,13 @@ from time import time
 from pyspark import SparkContext
 from pyspark.conf import SparkConf
 import inspect
-import collections
 import os
 import sys
 import traceback
 from tempfile import NamedTemporaryFile
-import tempfile
+
+from unidecode import unidecode
+
 
 '''DEBUGGING'''
 
@@ -60,7 +61,7 @@ def logTimeIntervalWithMsg(msg):
     if 1:
         time_deltas = timeDeltas()
         message = msg if msg else ""
-        string = "log:{0[time_since_start]:7,.3f} log:{0[time_since_last]:7,.3f} {1:}".format(time_deltas, message)
+        string = "total time:{0[time_since_start]:7,.3f} time since:{0[time_since_last]:7,.3f}  {1:}".format(time_deltas, message)
         filePrint(string)
 
 
@@ -92,32 +93,62 @@ def timeDeltas():
 
 def validateInput():
     if len(sys.argv) < 3:
+        printHelp()
         print >> sys.stderr, "Usage: spamPath <folder> (optional) stoplist<file>"
         exit(-1)
 
+def printHelp():
+    print ('''
+        =Usage=
+
+        Required:
+        t=<path to text files from current directory>
+        s=<path to stop file from current directory>
+
+        Optional:
+        l=1 # process by line
+        c=1 # count intermediates (logging)
+        n=1 # normalise word frequencies
+        e=1 # english texts only
+
+    ''')
+    exit(-1)
+
+
+
+
 def parseArgs(args):
     print("args {}".format(args))
-    parsedArgs = {}
+    parsed_args = {}
     for idx,arg in enumerate(args):
         if idx > 0:
             parse = re.split('=',arg)
             if len(parse) == 2:
                 (key, val) = parse
-                parsedArgs[key]=val
+                parsed_args[key]=val
             else:
                 print("input error: coudn't parse: {}".format(parse))
-    return parsedArgs
+    return parsed_args
 
 
-def stopList(stop_file):
+def stopList(stop_file_path):
     """
-    :param stop_file: path to file of stopwords
+    :param stop_file_path: path to file of stopwords
     :return:python array of stopwords
     """
-    stop_file_rdd = sc.textFile(stop_file)
-    return stop_file_rdd.flatMap (lambda x: re.split('\W+',x)).collect()
+    result = []
+    if stop_file_path:
+        stop_file_rdd = sc.textFile(stop_file_path)
+        result = stop_file_rdd.flatMap (lambda x: re.split('\W+',x)).collect()
+    return result
 
+'''OUTPUT'''
 
+def pickled(rdd):
+    tmp = NamedTemporaryFile(delete=True)
+    tmp.close()
+    rdd.saveAsPickleFile(tmp.name,3)
+    return tmp.name
 
 '''TEXT PROCESSING UTILS'''
 
@@ -135,85 +166,246 @@ def stopList(stop_file):
 #         ,flags=re.DOTALL|re.MULTILINE)
 #     return regex
 
+def decode(text):
+    decoded_text = unidecode(text)
+    return decoded_text
+    #return text
+
+
+def searchTextWithRegexes(txt,regex_array):
+    """
+    :param txt: text to search
+    :param regex_array: regular expressions to search with
+    :return:
+    """
+    if not txt:
+        return None
+    hits = []
+    for regex in regex_array:
+        hit = regex.search(txt)
+        if hit:
+            hits.append(hit)
+    return hits if len(hits)> 0 else None
+
+def regexFilters():
+    """
+    :return:dictionary of inclusion and exclusion regular expression filters
+    """
+    genome_regex = genomeRegex()
+    ascii_regex = asciiRegex()
+    english_regex=englishRegex()
+    regex_filters = {}
+    #exclude files matching any of these regexes
+    regex_filters['exclusions'] = [genome_regex]
+    #exclude files NOT matching any of these regexes
+    regex_filters['inclusions'] = [ascii_regex,english_regex]
+    return regex_filters
+
+
+def englishRegex():
+    """
+    regex to match English texts
+    uses 'Language:' attribution in header
+    :return:
+    """
+    logfuncWithArgs()
+
+    regex = re.compile(
+        "^(Language: English)"
+        ,re.MULTILINE)
+    return regex
+
+def germanRegex():
+    """
+    regex to match English texts
+    uses 'Language:' attribution in header
+    :return:
+    """
+    logfuncWithArgs()
+
+    regex = re.compile(
+        "^(Language: German)"
+        ,re.MULTILINE)
+    return regex
+
+def asciiRegex():
+    """
+    regex to match English texts
+    uses 'Language:' attribution in header
+    :return:
+    """
+    logfuncWithArgs()
+    regex = re.compile(
+        "^(Character set encoding: ASCII)"
+        ,re.MULTILINE)
+    return regex
+
+def genomeRegex():
+    regex = re.compile(
+        "^(Title: Human Genome Project)"
+        ,re.MULTILINE)
+    return regex
+
+
 def headerRegex():
-     '''
+     """
      regex to match header lines
      used in per-line processing
      :return: compiled regex
-     '''
+     """
+     logfuncWithArgs()
+
      regex = re.compile(
         "^(\*{3} *START OF TH(?:IS|E) PROJECT GUTENBERG[^\*]+\*{3})"  #end of header
-        )
+        ,re.MULTILINE)
      return regex
 
 def bodyTextRegex():
-     '''
+     """
      regex to match body text following header line
      used in per-file processing
      :return: compiled regex
-     '''
+     """
+     logfuncWithArgs()
+
      regex = re.compile(
         "^\*{3} *START OF TH(?:IS|E) PROJECT GUTENBERG[^\*]+\*{3}"  #end of header
         "(.*)"  #anything
         #"(^\*{3} *END OF TH(?:IS|E) PROJECT GUTENBERG){0,1}"  #start of footer
-        ,flags=re.DOTALL|re.MULTILINE)
+        ,flags=re.DOTALL|re.MULTILINE|re.UNICODE)
      return regex
 
 def idRegex():
-    '''
+    """
     regex to match book ID
     :return: compiled regex
-    '''
+    """
     logfuncWithArgs()
     regex = re.compile(
-        "\[EBook (\#[\d]+)\]"  #the EBOOK id
+        "\[E(?:Book|text) (\#[\d]+)\]"  #the EBOOK id
+        #"\[EBook (\#[\d]+)\]"  #the EBOOK id
         )
     return regex
 
 
 
 def remPlural(word):
-    '''
+    """
     crude depluralisation
     :param word: string
     :return: string with final s removed
-    '''
+    """
     word = word.lower()
     return word[:-1] if word.endswith('s') else word
 
 
 def searchWithRegex(txt,regex):
-    '''
+    """
     used by rddOfTextFilesByLine(path, rxID, rxBodyText): in per-line processing
     :param txt: text to search
     :param regex: regex of thing to extract
     :return: regext match object
-    '''
+    """
     result = "_"
     match = regex.search(txt)
     if match:
         result = match.group(1)
     return result
 
+def extractIdAndBodyTextWithFilters(txt,rx_id,rx_body_text,regex_filters=None):
+    """
+    used by rddWithHeadersRemovedIndexedByID() in per-file processing
+    :param txt: text to search (will be one file)
+    :param rx_id: regex to extract the ebook id
+    :param rx_body_text: regex to extract all text following the header
+    :param rx_english: regex to flag English texts from header language info
+    :param rx_ascii: regex to flag ASCII-encoded texts from header language info
+
+    :return: tuple of (ebook id, text-with-header-removed)
+    """
+    id_text = "_"
+    body_text = "_"
+    id_match = rx_id.search(txt)
+    body_match = rx_body_text.search(txt)
+
+    #if we are filtering for language, we want to accept all ENGLISH texts and all ASCII-encoded texts
+    # - some ASCII texts are flagged as language: (English and...), we want to keep these in
+    # - english texts encoded as unicode will read correctly as unicode is a superset of ASCII
+    #excluded = searchTextWithRegexes(txt,exclusions) if exclusions else None
+    #if not excluded:
+    included = 1
+    #print("regex_filters {}".format(regex_filters))
+    if regex_filters:
+        included = 0
+        excluded = searchTextWithRegexes(txt,regex_filters['exclusions']) if regex_filters['exclusions'] else 0
+        if not excluded:
+            included = searchTextWithRegexes(txt,regex_filters['inclusions']) if regex_filters['inclusions'] else 1
+
+    if included:
+        if id_match:
+            id_text = id_match.group(1)
+        if body_match:
+            body_text = body_match.group(1)
+    result = (id_text,body_text)
+    return result
+
+
+
+def extractIdAndBodyTextEnglish(txt,rx_id,rx_body_text,regex_filters=None):
+    """
+    used by rddWithHeadersRemovedIndexedByID() in per-file processing
+    :param txt: text to search (will be one file)
+    :param rx_id: regex to extract the ebook id
+    :param rx_body_text: regex to extract all text following the header
+    :param rx_english: regex to flag English texts from header language info
+    :param rx_ascii: regex to flag ASCII-encoded texts from header language info
+
+    :return: tuple of (ebook id, text-with-header-removed)
+    """
+    id_text = "_"
+    body_text = "_"
+    id_match = rx_id.search(txt)
+    body_match = rx_body_text.search(txt)
+
+    #if we are filtering for language, we want to accept all ENGLISH texts and all ASCII-encoded texts
+    # - some ASCII texts are flagged as language: (English and...), we want to keep these in
+    # - english texts encoded as unicode will read correctly as unicode is a superset of ASCII
+    #excluded = searchTextWithRegexes(txt,exclusions) if exclusions else None
+    #if not excluded:
+
+    regex = englishRegex()
+    regex1 = re.compile("^(Language: English)",re.MULTILINE)
+    included = regex1.search(txt)
+    print ("text {}".format(txt))
+
+    print ("included {}".format(included))
+
+    if included:
+        if id_match:
+            id_text = id_match.group(1)
+        if body_match:
+            body_text = body_match.group(1)
+    result = (id_text,body_text)
+    return result
 
 
 def extractIdAndBodyText(txt,rxID,rxBodyText):
-    '''
+    """
     used by rddWithHeadersRemovedIndexedByID() in per-file processing
     :param txt: text to search (will be one file)
     :param rxID: regex to extract the ebook id
     :param rxBodyText: regex to extract all text following the header
     :return: tuple of (ebook id, text-with-header-removed)
-    '''
-    idTxt = "_"
-    bodyTxt = "_"
-    idMatch = rxID.search(txt)
-    bodyMatch = rxBodyText.search(txt)
-    if idMatch:
-        idTxt = idMatch.group(1)
-    if bodyMatch:
-        bodyTxt = bodyMatch.group(1)
-    result = (idTxt,bodyTxt)
+    """
+    id_text = "_"
+    body_text = "_"
+    id_match = rxID.search(txt)
+    body_match = rxBodyText.search(txt)
+    if id_match:
+        id_text = id_match.group(1)
+    if body_match:
+        body_text = body_match.group(1)
+    result = (id_text,body_text)
 
     return result
 
@@ -237,240 +429,208 @@ def extractIdAndBodyText(txt,rxID,rxBodyText):
 
 '''
 
-def wordCountPerFile(rdd):
-    '''
-    :param rdd: rdd of (file,word) tuples
-    :return:rdd of (file, [(word, count),(word, count)...]) tuples
-    '''
-    logfuncWithArgs()
-    logTimeIntervalWithMsg("##### BUILDING wordCountPerFile #####")
-    wcf = rdd.map(lambda(x): ((x[0], x[1]), 1))
+def normaliseWordFrequencies(rdd,smoothing=0.4):
+    """
+    used by wordCountperFile if we want to normalise our term frequencies
+    see sec. 6.4.2, maximum tf normalization in 'An Introduction to Information Retrieval'
+    (Manning, Raghavan and Schutze, CUP 2009)
+    :param rdd of (file, [(word, count),(word, count)...]) tuples
+    :return:rdd of (file, [(word, count),(word, count)...]) tuples where count is normalised
+    """
 
-    logTimeIntervalWithMsg('##### GETTING THE  ((file,word),n)\
-     WORDCOUNT PER (DOC, WORD) #####')
-    result = wcf.reduceByKey(add)
-    #print ("wcf: {}".format(result.take(1)))
 
-    logTimeIntervalWithMsg('##### REARRANGE AS  (file, [(word, count)])  #####')
-    result = result.map(lambda (a, b): (a[0], [(a[1], b)]))
-    #print ("wordcount: {}".format(result.take(1)))
-    logTimeIntervalWithMsg ('##### CONCATENATE (WORD,COUNT) LIST PER FILE \
-           AS  (file, [(word, count),(word, count)...])  #####')
-    result = result.reduceByKey(add)
+
+    # now get the frequency of the most-frequent term (the maximal term frequency)
+    # so that we can normalise our term frequencies per document
+
+    max_term_freq = rdd.map (lambda x: (
+                               (x[0], max(x[1], key = lambda y: y[1])[1])
+                               ,x[1] )
+                              )
+    #print ("\n\nmaxTermFreq: {}".format(max_term_freq.take(1)))
+
+    #zip it up wit the result
+
+    result = max_term_freq.zip(rdd).map(lambda x:x[0])
+
+    #nomalise each term frequency by division with maxFreq
+    #print ("\n\nzipped: {}\n\n".format(result.take(4)))
+    result = result.map (lambda x : (x[0][0],
+                                      [(wf[0],
+                                        smoothing+(1-smoothing)*wf[1]/float(x[0][1])
+                                       )
+                                        for wf in x[1]]
+                                     )
+                         )
+    #print ("\n\nresult: {}\n\n".format(result.take(1)))
+
     return result
 
 
-'''PART 1 - PROCESSING PER LINE'''''
-
-def rddOfTextFilesByLine(path, rxID, rxHeader):
-    '''
-    :param path: path to text files
-    :param rxID: compiled regex to locat ebook ID
-    :param rxHeader: compiled regex to locate header
-    :return:
-    '''
-    rdd = sc.parallelize("")
-    (location, folders, files) = walk(path).next()
-    for filename in files:
-
-        print '.',
-        if filename != '.DS_Store':
-            filepath = os.path.join(location, filename)
-            #print filepath,
-            textfile = sc.textFile(filepath).zipWithIndex()
-            #print (textfile.take(1))
-            id_rdd = textfile.map(lambda x: searchWithRegex(x[0],rxID)).filter(lambda(ebookid):ebookid is not "_")
-            header_rdd = textfile.map(lambda x: (searchWithRegex(x[0], rxHeader), x[1])) \
-                              .filter(lambda x: x[0] is not "_")
-
-
-            text_with_header = textfile.cartesian(header_rdd)
-            text_minus_header = text_with_header.filter(lambda x:x[0][1]>(x[1][1]+1)).map(lambda x:x[0])
-            text_minus_header_with_id = text_minus_header.cartesian(id_rdd)
-            #print (sample)
-            #print ("text_with_id {}".format(text_with_id.take(1)))
-            #print ("text_with_header {}".format(text_with_header.take(1)))
-            #print ("text_minus_header {}".format(text_minus_header.take(2)))
-            #print ("text_minus_header {}".format(text_minus_header_with_id.take(20)))
-
-            rdd = rdd.union(text_minus_header_with_id) if rdd else text_minus_header_with_id
-
-    for folder in folders:
-         sub_path = os.path.join(location, folder)
-         rdd = rdd.union(rddOfTextFilesByLine(sub_path,rxID,rxHeader))
-
-    return rdd
-
-
-
-def processLineRDD(rdd, stop_list=[]):
+def wordCountPerFile(rdd):
     """
-    :param rdd:  rdd of lines - ((text,lineNumber),bookID)
-    :param stop_list: [list, of, stop, words]
-    :return:wordCountPerFileRDD [(bookID,[(word,count)][(word,count)]...)]
+    :param rdd: rdd of (file,word) tuples
+    :return:rdd of (file, [(word, count),(word, count)...]) tuples
     """
-    logfuncWithArgs()
+    #logfuncWithArgs()
+    logTimeIntervalWithMsg ('starting wordCountPerFile')
+    #logTimeIntervalWithMsg("##### BUILDING wordCountPerFile #####")
+    wcf = rdd.map(lambda(x): ((x[0], x[1]), 1))
+
+    #logTimeIntervalWithMsg('##### GETTING THE  ((file,word),n)\
+    # WORDCOUNT PER (DOC, WORD) #####')
+    result = wcf.reduceByKey(add)
+    #print ("wcf: {}".format(result.take(1)))
+
+    #logTimeIntervalWithMsg('##### REARRANGE AS  (file, [(word, count)])  #####')
+    result = result.map(lambda (a, b): (a[0], [(a[1], b)]))
+    #print ("wordcount: {}".format(result.take(1)))
+    #logTimeIntervalWithMsg ('##### CONCATENATE (WORD,COUNT) LIST PER FILE \
+    #       AS  (file, [(word, count),(word, count)...])  #####')
+    result = result.reduceByKey(add)
+    logTimeIntervalWithMsg ('finished wordCountPerFile')
+
+    #print ("\n\nwordcount: {}".format(result.take(1)))
 
 
-    #logTimeIntervalWithMsg("##### BUILDING (file, word) tuples #####")
+    return result
 
+''' PROCESSING PER FILE'''''
 
-    flatmappedRDD = rdd.flatMap(lambda (words, bookID):
-                                ([(bookID, remPlural(word))
-                                 for word in re.split('\W+', words[0])
-                                 if len(word) > 0
-                                 and word not in stop_list
-                                 and remPlural(word) not in stop_list]))
-
-    #print ("flatmappedRDD {}".format(flatmappedRDD.take(1)))
-    # logTimeIntervalWithMsg("flatmappedRDD {}".format(flatmappedRDD.take(1)))
-    wordCountPerFileRDD = wordCountPerFile(flatmappedRDD)
-    #print ("wordCountPerFileRDD {}".format(wordCountPerFileRDD.take(1)))
-
-    # logTimeIntervalWithMsg("wordCountPerFileRDD {}".format(wordCountPerFileRDD.take(1)))
-    return wordCountPerFileRDD
-
-
-def one_a_to_d_by_line(textPath):
-    '''
-    part 1 (a-d) of the project
-    processing the texts line-by-line
-    :param textPath: path to texts we want to classify
-    :return:rdd of (textID[(word,count),(word,count)...]
-    '''
-    rxID = idRegex()
-    rxHeader = headerRegex()
-    logTimeIntervalWithMsg("starting rddOfTextFilesByLine")
-    lineRDD = rddOfTextFilesByLine(textPath,rxID,rxHeader)
-    logTimeIntervalWithMsg("finished rddOfTextFilesByLine")
-    #filePrint("lineRDD {}".format(lineRDD.takeSample(False,3,1)))
-    logTimeIntervalWithMsg("starting processedByLineRDD")
-    #remove duplicates
-    processedByLineRDD = processLineRDD(lineRDD,stop_list)
-    logTimeIntervalWithMsg("ended processedByLineRDD")
-
-    #filePrint  ("processedByLineRDD {}".format(processedByLineRDD.take(1)),filehandle)
-    filePrint ("found texts {}".format(processedByLineRDD.count()))
-    return processedByLineRDD
-
-
-'''PART 1 - PROCESSING PER FILE'''''
-
-def idfFromWordCountsPerFile(rdd):
-    '''
-    :param rdd: array of (file,[(word,count),(word,count)...] )
-    :return: idf: array of ( word,Nd[[(file,count),(file,count)...]] )
-    '''
-    number_of_docs = rdd.count()
-    '''
-    file, (word,count..)
-    '''
-    #new_rdd = rdd.map(lambda x: x[])
 
 def rddOfWholeTextFileRDDs(path):
-    '''
+    """
+    read in textFiles using sc.wholeTextFiles
+    this is faster than using sc.textFile() so we use this version
+    unless we want to filter for file sizes
     :param path: path to text files
     :return: rdd of text files
-    '''
-    textFiles = sc.wholeTextFiles(path)
+    """
+    rdd = sc.wholeTextFiles(path)
     (location, folders, files) = walk(path).next()
     for folder in folders:
         print '.',
 
         sub_path = os.path.join(location, folder)
-        textFiles = textFiles.union(rddOfWholeTextFileRDDs(sub_path))
+        rdd = rdd.union(rddOfWholeTextFileRDDs(sub_path))
+    return rdd
 
-    return textFiles
+''' PROCESSING PER LINE'''''
+
+def rddOfTextFilesByLine(path, rx_id, rx_header,regex_filters,max_file_size):
+    """
+    read in textFiles using sc.textFile()
+    filter for max_file_size and regex filters as we read in the files
+    this is slower than using sc.wholeTextFiles() in rddOfWholeTextFileRDDs()
+    and we only use it if we wish to filter for file sizes
+    :param path: path to text files
+    :param rx_id: compiled regex to locat ebook ID
+    :param rx_header: compiled regex to locate header
+    :return:
+    """
+    rdd = sc.parallelize("")
+    (location, folders, files) = walk(path).next()
+    for filename in files:
+        print '.',
+        filepath = os.path.join(location, filename)
+        filesize = os.path.getsize(filepath)
+        if filename != '.DS_Store' and filesize < max_file_size:
+            textfile_rdd = sc.textFile(filepath).zipWithIndex()
+            id_rdd = textfile_rdd.map(lambda x: searchWithRegex(x[0],rx_id)).filter(lambda(ebookid):ebookid is not "_")
+            header_rdd = textfile_rdd.map(lambda x: (searchWithRegex(x[0], rx_header), x[1])) \
+                              .filter(lambda x: x[0] is not "_")
+            text_with_header = textfile_rdd.cartesian(header_rdd)
+            text_minus_header = text_with_header.filter(lambda x:x[0][1]>(x[1][1]+1)).map(lambda x:x[0][0])
+            header_minus_text = text_with_header.filter(lambda x:x[0][1]<(x[1][1]+1)).map(lambda x:x[0])
+            if regex_filters:
+                excluded = None
+                for exclusion_regex in regex_filters['exclusions']:
+                    exclusion_rdd = header_minus_text.map(lambda x: searchWithRegex(x[0],exclusion_regex))\
+                                                  .filter(lambda(result):result is not "_")
+                    if exclusion_rdd.count()>0:
+                        excluded = 1
+                        break
+                if excluded:
+                    continue
+
+                included = None
+                for inclusion_regex in regex_filters['inclusions']:
+                    inclusion_rdd = header_minus_text.map(lambda x: searchWithRegex(x[0],inclusion_regex))\
+                                                  .filter(lambda(result):result is not "_")
+                    if inclusion_rdd.count() > 0:
+                        included = 1
+                        break
+                if not included:
+                    continue
+
+            text_minus_header_with_id = text_minus_header.cartesian(id_rdd).map(lambda x:(x[1],x[0]))
+            text_combinded= text_minus_header_with_id.reduceByKey(lambda x,y: x+" "+y)
+            rdd = rdd.union(text_combinded) if rdd else text_combinded
+
+    for folder in folders:
+         sub_path = os.path.join(location, folder)
+         rdd = rdd.union(rddOfTextFilesByLine(sub_path,rx_id,rx_header,regex_filters,max_file_size))
+
+    return rdd
 
 
-def processRDD(rdd, stop_list=[]):
+
+def idfFromWordCountsPerFile(rdd):
+    """
+    :param rdd: array of (file,[(word,count),(word,count)...] )
+    :return: idf: array of ( word,Nd[[(file,count),(file,count)...]] )
+    """
+    number_of_docs = rdd.count()
+    '''
+    file, (word,count..)
+    '''
+    #new_rdd = rdd.map(lambda x: x[])x
+
+
+
+
+def processRDD(rdd, stop_list_path=None):
     """
     :param rdd:  rdd as read from filesystem ('filename','file_contents')
-    :param stop_list: [list, of, stop, words]
+    :param stop_list_path: [list, of, stop, words]
     :return:wordCountPerFileRDD [(filename,[(word,count)][(word,count)]...)]
     """
     logfuncWithArgs()
 
-
     #logTimeIntervalWithMsg("##### BUILDING (file, word) tuples #####")
+    stop_list = stopList(stop_list_path)
 
-
-    flatmappedRDD = rdd.flatMap(lambda (iebook_id, words):
+    flatmapped_rdd = rdd.flatMap(lambda (iebook_id, words):
                                 ([(iebook_id, remPlural(word))
-                                 for word in re.split('\W+', words)
+                                 for word in re.split('\W+', decode(words))
                                  if len(word) > 0
                                  and word not in stop_list
                                  and remPlural(word) not in stop_list]))
 
     #print ("flatmappedRDD {}".format(flatmappedRDD.take(1)))
     # logTimeIntervalWithMsg("flatmappedRDD {}".format(flatmappedRDD.take(1)))
-    wordCountPerFileRDD = wordCountPerFile(flatmappedRDD)
+    wordcount_per_file_rdd = wordCountPerFile(flatmapped_rdd)
     #print ("wordCountPerFileRDD {}".format(wordCountPerFileRDD.take(1)))
 
     # logTimeIntervalWithMsg("wordCountPerFileRDD {}".format(wordCountPerFileRDD.take(1)))
-    return wordCountPerFileRDD
+    return wordcount_per_file_rdd
 
 
 
 
-def rddWithHeadersRemovedIndexedByID(rdd):
-    '''
-    called from one_a_to_d_by_file(textPath):
+def rddWithHeadersRemovedIndexedByID(rdd, rx_id, rx_body_text, regex_filters=None):
+    """
     b)From the text files you need to remove the header.
     The last line of the header starts and ends with ***.
     c)You need to extract the ID of the text,
     which occurs in the header in the format [EBook #<ID>],
     where ID is a natural number.
-    '''
-    #print rdd.take(1)
-    rxID = idRegex()
-    rxBodyText = bodyTextRegex()
-    rdd = rdd.map(lambda x:extractIdAndBodyText(x[1],rxID,rxBodyText)) \
+    """
+    rdd = rdd.map(lambda x:extractIdAndBodyTextWithFilters(x[1],rx_id,rx_body_text, regex_filters)) \
               .filter(lambda (iebook_id,txt): iebook_id is not "_" and txt is not "_")
-              #.flatmap(lambda (id, text): [(id, word) for word in re.split('\W+',text)])
-
     return rdd
 
 
-
-def one_a_to_d_by_file(textPath):
-    '''
-    part 1 (a-d) of the project
-    processing the texts per file
-    :param textPath: path to texts we want to classify
-    :return:rdd of (textID[(word,count),(word,count)...]
-    '''
-
-    logTimeIntervalWithMsg("starting rddOfWholeTextFileRDDs")
-
-    bigRDD = rddOfWholeTextFileRDDs(textPath)
-
-    if count_intermediates:
-        filePrint ("bigRDD.count {}".format(bigRDD.count())) #515
-
-    logTimeIntervalWithMsg("starting rddWithHeadersRemovedIndexedByID")
-
-
-    bigRDD = rddWithHeadersRemovedIndexedByID(bigRDD)
-    if count_intermediates:
-         filePrint ("rddWithHeadersRemovedIndexedByID.count {}".format(bigRDD.count())) #395
-    #remove duplicates
-    bigRDD = bigRDD.reduceByKey(lambda x,y: x)
-    #filePrint ("reduceByKey.count {}".format(bigRDD.count()),filehandle) #395
-    logTimeIntervalWithMsg("starting processedByFileRDD")
-
-    processedByFileRDD = processRDD(bigRDD,stop_list)
-    logTimeIntervalWithMsg("ended processedByFileRDD")
-
-    #filePrint ("processedByFileRDD {}".format(processedByFileRDD.take(1)),filehandle)
-    filePrint ("found texts {}".format(processedByFileRDD.count())) #161
-    return processedByFileRDD
-
-def pickle(rdd):
-    tmp = NamedTemporaryFile(delete=True)
-    tmp.close()
-    rdd.saveAsPickleFile(tmp.name,3)
-    return tmp.name
 
 ' THE MAIN LOOP '
 
@@ -495,28 +655,38 @@ if __name__ == "__main__":
 
     validateInput()
     global g_filehandle
-    g_filehandle = open('out.txt', 'a')
+    logfile = 'out.txt'
+    logfile = os.path.abspath(logfile)
+    g_filehandle = open(logfile, 'a')
 
 
     sparkConf = SparkConf()
-    sparkConf.setMaster("local[4]").setAppName("project")
-    print("spark.app.name {}".format(sparkConf.get('spark.app.name')))
-    print("spark.master {}".format(sparkConf.get('spark.master')))
-    print("spark.executor.extraJavaOptions {}".format(sparkConf.get('executor.extraJavaOptions')))
+    sparkConf.setMaster("local[*]").setAppName("project")
+    sparkConf.set("spark.local.dir","/Volumes/jScratch/_new_scratch/tmp")
+    sparkConf.set("spark.logConf","true")
+    sparkConf.set("spark.executor.memory","6g")
+
+
+
     print("sparkConf.toDebugString() {}".format(sparkConf.toDebugString()))
 
     sc = SparkContext(conf=sparkConf)
 
-
     '''END OF INITIALISATION'''
 
     parsed_args = parseArgs(sys.argv)
-    print (parsed_args)
-    textPath = parsed_args['t'] if 't' in parsed_args else sys.argv[1]
-    line_processing = parsed_args['l'] if 'l' in parsed_args else None
-    stop_list = parsed_args['s'] if 's' in parsed_args else []
-    count_intermediates = parsed_args['c'] if 'c' in parsed_args else None
+    if len(parsed_args) < 1:
+        printHelp()
+        exit(-1)
 
+    print (parsed_args)
+    text_path = parsed_args['t'] if 't' in parsed_args else sys.argv[1]
+    line_processing = parsed_args['l'] if 'l' in parsed_args else None
+    stop_list_path = parsed_args['s'] if 's' in parsed_args else []
+    count_intermediates = parsed_args['c'] if 'c' in parsed_args else None
+    normalise_word_frequencies = parsed_args['n'] if 'n' in parsed_args else None
+    filter_english_texts = parsed_args['e'] if 'e' in parsed_args else None
+    max_file_size = int(parsed_args['max']) if 'max'in parsed_args else None
 
     '''
     a) Start by traversing the text-part directory ,
@@ -530,31 +700,67 @@ if __name__ == "__main__":
     which occurs in the header in the format [EBook #<ID>],
     where ID is a natural number.
 
-    d) Extract the list of Word Frequency pairs per file (as an RDD) and...
+    d) Extract the list of Word Frequency pairs per file (as an RDD) and
+    save it to disk for later use.
 
     '''
+    if filter_english_texts:
+        regex_filters = regexFilters()
+    else:
+        regex_filters=None
 
-    if line_processing:
-        rdd = one_a_to_d_by_line(textPath)
+    rx_id = idRegex()
+    if max_file_size:
+        # line-by-line processing: this is slower but allows us to filter for maximum file sizes
+        rx_header = headerRegex()
+        rdd = rddOfTextFilesByLine(text_path,rx_id,rx_header,regex_filters,max_file_size)
 
     else:
-        rdd = one_a_to_d_by_file(textPath)
+        # file-by-file processing- faster but cannot filter for maximum file sizes
+        rx_body_text = bodyTextRegex()
+        rdd = rddOfWholeTextFileRDDs(text_path)
+        rdd = rddWithHeadersRemovedIndexedByID(rdd, rx_id, rx_body_text, regex_filters)
 
 
-    '''... save it to disk for later use.'''
+    logTimeIntervalWithMsg ("about to start processRDD") #161
 
-    pickle_of_word_counts_per_file = NamedTemporaryFile(delete=True)
-    pickle_of_word_counts_per_file.close()
-    rdd.saveAsPickleFile(pickle_of_word_counts_per_file.name, 3)
+    # remove duplicates is implemented with this reduceByKey method.
+    # if we encounter more than one text with
+    # the same bookID we will only use the first. These texts are identical but
+    # use different encodings (ASCII, utf8 etc).
+    # a better implementation would select in order of preference: utf8,other_encoding, ascii
+    # and ensure that other_encoding was transcoded to utf8.
+    rdd = rdd.reduceByKey(lambda x,y: x)
 
-    print("tmpFile{}".format(pickle_of_word_counts_per_file))
+    rdd = processRDD(rdd,stop_list_path)
+    logTimeIntervalWithMsg ("finished processRDD") #161
 
-    pickleRDD = sc.pickleFile(pickle_of_word_counts_per_file.name, 3)
-    print ("tmpFile reread {}".format(pickleRDD.take(1)))
+    #print("word_frequency_per_file_rdd: {}".format(word_frequency_per_file_rdd.take(1)))
+
+    if normalise_word_frequencies:
+        rdd = normaliseWordFrequencies(rdd)
+
+    logTimeIntervalWithMsg ("finished normalising") #161
+
+    logTimeIntervalWithMsg ("found texts {}".format(rdd.count())) #161
+
+
+    pickle_file = pickled(rdd)
+   # filePrint("tmpFile{}".format(pickle_file))
+
+    pickleRDD = sc.pickleFile(pickle_file, 3)
+   # filePrint ("tmpFile reread {}".format(pickleRDD.collect()))
 
     '''
-
     e) Calculate the IDF values and save the list of (word,IDF) pairs for later use.
+
+     Use the list of (file, [(word,count) ... (word,count)]) again to ,\
+    \n create a new RDD by reorganising the tuples and lists such that\
+    \n the words are the keys and count the occurrences of words per file\
+    \n using map(). \n"
+
+    word [(file,count),(file,count),(file,count)]
+
     f) Calculate the TF.IDF values and create a 10000 dimensional vector per document using the hashing trick.
     '''
 
