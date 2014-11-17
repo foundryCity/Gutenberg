@@ -7,6 +7,7 @@ from operator import add
 
 # from datetime import datetime  #, time, timedelta
 from time import time
+from time import localtime
 from pyspark import SparkContext
 from pyspark.conf import SparkConf
 import inspect
@@ -28,7 +29,10 @@ def exceptionTraceBack(exctype, value, tb):
 
 
 '''LOGGING TRACEBACKS'''
-
+def timestring():
+    cltime = localtime(time())
+    return "{}:{}:{}".format(cltime.tm_hour,cltime.tm_min,cltime.tm_sec)
+    #return "{}".format(cltime)
 
 def filePrint(string):
     global g_filehandle
@@ -696,14 +700,10 @@ if __name__ == "__main__":
 
 
     sparkConf = SparkConf()
-    sparkConf.setMaster("local[*]").setAppName("project")
-    sparkConf.set("spark.local.dir","/Volumes/jScratch/_new_scratch/tmp")
+    sparkConf.setMaster("local[4]").setAppName("project")
+    #sparkConf.set("spark.local.dir","/Volumes/jScratch/_new_scratch/tmp")
     sparkConf.set("spark.logConf","true")
     sparkConf.set("spark.executor.memory","6g")
-
-
-
-    print("sparkConf.toDebugString() {}".format(sparkConf.toDebugString()))
 
     sc = SparkContext(conf=sparkConf)
 
@@ -714,12 +714,16 @@ if __name__ == "__main__":
         printHelp()
         exit(-1)
 
-    print (parsed_args)
+    filePrint("\n\nstarted run at {}".format(timestring()))
+    logTimeIntervalWithMsg ("{}".format(parsed_args))
+    logTimeIntervalWithMsg("sparkConf.toDebugString() {}".format(sparkConf.toDebugString()))
+
     text_path = parsed_args['t'] if 't' in parsed_args else sys.argv[1]
     stop_list_path = parsed_args['s'] if 's' in parsed_args else []
     normalise_word_frequencies = parsed_args['n'] if 'n' in parsed_args else None
     filter_files = parsed_args['f'] if 'f' in parsed_args else None
     max_file_size = int(parsed_args['max']) if 'max'in parsed_args else None
+
     '''
      example usages
      spark-submit  --driver-memory 8G project.py t=data/text_party s=stopwords_en.txt f=1
@@ -744,14 +748,20 @@ if __name__ == "__main__":
     save it to disk for later use.
 
     '''
+
+    number_of_input_files = numberOfInputFiles(text_path)
+    logTimeIntervalWithMsg ("input files: {} ".format(number_of_input_files)) #161
+
     if filter_files:
+        logTimeIntervalWithMsg("filtering files...")
         regex_filters = regexFilters()
     else:
+        logTimeIntervalWithMsg("not filtering files...")
         regex_filters=None
 
     rx_id = idRegex()
-    number_of_input_files = numberOfInputFiles(text_path)
-    logTimeIntervalWithMsg ("input files: {} ".format(number_of_input_files)) #161
+
+
 
     if max_file_size:
         # line-by-line processing: this is slower but allows us to filter for maximum file sizes
@@ -775,8 +785,10 @@ if __name__ == "__main__":
     # and ensure that other_encoding was transcoded to utf8.
     rdd = rdd.reduceByKey(lambda x,y: x)
 
-    rdd = processRDD(rdd,stop_list_path)
+    rdd = processRDD(rdd,stop_list_path) #.persist(sc.StorageLevel.MEMORY_AND_DISK)
+    word_count_per_file_pickle = pickled(rdd)
     logTimeIntervalWithMsg ("finished processRDD") #161
+    print("word_count_per_file: {}".format(rdd.take(5)))
 
     #print("word_frequency_per_file_rdd: {}".format(word_frequency_per_file_rdd.take(1)))
 
@@ -788,12 +800,15 @@ if __name__ == "__main__":
     logTimeIntervalWithMsg ("input files: {} found texts: {}".format(number_of_input_files,rdd.count())) #161
 
 
-    pickle_file = pickled(rdd)
+    word_frequency_per_file_pickle = pickled(rdd)
    # filePrint("tmpFile{}".format(pickle_file))
 
-    pickleRDD = sc.pickleFile(pickle_file, 3)
    # filePrint ("tmpFile reread {}".format(pickleRDD.collect()))
 
+    rdd = sc.pickleFile(word_count_per_file_pickle, 3)
+    #print("pre: {}".format(rdd.take(5)))
+    rdd = rdd.map (lambda (a,b) : (b[0][0],[((a,b[0][1]))]))
+    print("word_rdd: {}".format(rdd.take(5)))
     '''
     e) Calculate the IDF values and save the list of (word,IDF) pairs for later use.
 
@@ -802,8 +817,12 @@ if __name__ == "__main__":
     \n the words are the keys and count the occurrences of words per file\
     \n using map(). \n"
 
+    from file [(word,count),(word,count),(word),coutn
     word [(file,count),(file,count),(file,count)]
+   '''
 
+
+    '''
     f) Calculate the TF.IDF values and create a 10000 dimensional vector per document using the hashing trick.
     '''
 
@@ -813,6 +832,7 @@ if __name__ == "__main__":
     end_s_time = time()
     runtime_s = end_s_time - start_s_time
     filePrint("\ntotal running time:{}".format(runtime_s))
+    filePrint("ended run at {}\n".format(timestring()))
 
 
 
