@@ -15,6 +15,7 @@ import os
 import sys
 import traceback
 from tempfile import NamedTemporaryFile
+import math
 
 from unidecode import unidecode
 
@@ -96,7 +97,7 @@ def timeDeltas():
 ''' INPUT '''
 
 def validateInput():
-    if len(sys.argv) < 3:
+    if len(sys.argv) < 2:
         printHelp()
         print >> sys.stderr, "Usage: spamPath <folder> (optional) stoplist<file>"
         exit(-1)
@@ -163,6 +164,10 @@ def pickled(rdd):
     rdd.saveAsPickleFile(tmp.name,3)
     return tmp.name
 
+def unpickled(sc,pickle_name):
+    rdd = sc.pickleFile(pickle_name, 3)
+    return rdd
+
 '''TEXT PROCESSING UTILS'''
 
 #'''This regex not used - it extracted ebook ID and body text following heading all in one go
@@ -179,9 +184,8 @@ def pickled(rdd):
 #         ,flags=re.DOTALL|re.MULTILINE)
 #     return regex
 
-def decode(text):
-    decoded_text = unidecode(text)
-    return decoded_text
+def decode(decode_unicode,text):
+    return unidecode(text) if decode_unicode else text
     #return text
 
 
@@ -224,9 +228,10 @@ def englishRegex():
     logfuncWithArgs()
 
     regex = re.compile(
-        "^(Language: English)"
-        ,re.MULTILINE)
+        ur'^(Language: English)'
+        ,flags=re.MULTILINE|re.UNICODE)
     return regex
+
 
 def germanRegex():
     """
@@ -237,8 +242,8 @@ def germanRegex():
     logfuncWithArgs()
 
     regex = re.compile(
-        "^(Language: German)"
-        ,re.MULTILINE)
+        ur'^(Language: German)'
+        ,flags=re.MULTILINE|re.UNICODE)
     return regex
 
 def frenchRegex():
@@ -250,8 +255,8 @@ def frenchRegex():
     logfuncWithArgs()
 
     regex = re.compile(
-        "^(Language: French)"
-        ,re.MULTILINE)
+        ur"^(Language: French)"
+        ,flags=re.MULTILINE|re.UNICODE)
     return regex
 
 def esperantoRegex():
@@ -263,8 +268,8 @@ def esperantoRegex():
     logfuncWithArgs()
 
     regex = re.compile(
-        "^(Language: Esperanto)"
-        ,re.MULTILINE)
+        ur"^(Language: Esperanto)"
+        ,flags=re.MULTILINE|re.UNICODE)
     return regex
 
 def asciiRegex():
@@ -275,14 +280,14 @@ def asciiRegex():
     """
     logfuncWithArgs()
     regex = re.compile(
-        "^(Character set encoding: ASCII)"
-        ,re.MULTILINE)
+        ur"^(Character set encoding: ASCII)"
+        ,flags=re.MULTILINE|re.UNICODE)
     return regex
 
 def genomeRegex():
     regex = re.compile(
-        "^(Title: Human Genome Project)"
-        ,re.MULTILINE)
+        ur"^(Title: Human Genome Project)"
+        ,flags=re.MULTILINE|re.UNICODE)
     return regex
 
 
@@ -295,8 +300,8 @@ def headerRegex():
      logfuncWithArgs()
 
      regex = re.compile(
-        "^(\*{3} *START OF TH(?:IS|E) PROJECT GUTENBERG[^\*]+\*{3})"  #end of header
-        ,re.MULTILINE)
+        ur"^(\*{3} *START OF TH(?:IS|E) PROJECT GUTENBERG[^\*]+\*{3})"  #end of header
+        ,flags=re.MULTILINE|re.UNICODE)
      return regex
 
 def bodyTextRegex():
@@ -308,8 +313,8 @@ def bodyTextRegex():
      logfuncWithArgs()
 
      regex = re.compile(
-        "^\*{3} *START OF TH(?:IS|E) PROJECT GUTENBERG[^\*]+\*{3}"  #end of header
-        "(.*)"  #anything
+        ur"^\*{3} *START OF TH(?:IS|E) PROJECT GUTENBERG[^\*]+\*{3}"  #end of header
+        ur"(.*)"  #anything
         #"(^\*{3} *END OF TH(?:IS|E) PROJECT GUTENBERG){0,1}"  #start of footer
         ,flags=re.DOTALL|re.MULTILINE|re.UNICODE)
      return regex
@@ -321,7 +326,7 @@ def idRegex():
     """
     logfuncWithArgs()
     regex = re.compile(
-        "\[E(?:Book|text) (\#[\d]+)\]"  #the EBOOK id
+        ur"\[E(?:Book|text) (\#[\d]+)\]"  #the EBOOK id
         #"\[EBook (\#[\d]+)\]"  #the EBOOK id
         )
     return regex
@@ -617,18 +622,32 @@ def rddOfTextFilesByLine(path, rx_id, rx_header,regex_filters,max_file_size):
 def idfFromWordCountsPerFile(rdd):
     """
     :param rdd: array of (file,[(word,count),(word,count)...] )
-    :return: idf: array of ( word,Nd[[(file,count),(file,count)...]] )
+    :return: idf: array of [( word,idf)] ) where idf = log (N/doc-frequency)
     """
-    number_of_docs = rdd.count()
-    '''
-    file, (word,count..)
-    '''
-    #new_rdd = rdd.map(lambda x: x[])x
+    #print("pre: {}".format(rdd.collect()))
+    number_of_documents = rdd.count()
+    rdd = rdd.map (lambda (a,b) : (a,[(tuple[0],(a,tuple[1])) for tuple in b]))
+
+    #print("\nintermediate_rdd: {}".format(rdd.collect()))
+    rdd = rdd.flatMap(lambda a:a[1])
+    #print("\nflatMap: {}".format(rdd.collect()))
+    rdd = rdd.map(lambda x:(x[0],1))
+    #print("\nmap: {}".format(rdd.collect()))
+
+    rdd = rdd.reduceByKey(add)
+    #print("\nreduce: {}".format(rdd.collect()))
+
+    rdd = rdd.map(lambda x:(x[0],math.log(number_of_documents/float(x[1]),2)))
+    #print("\nidf: {}".format(rdd.collect()))
+    return rdd
 
 
 
 
-def processRDD(rdd, stop_list_path=None):
+
+
+
+def processRDD(rdd, stop_list_path,decode_unicode):
     """
     :param rdd:  rdd as read from filesystem ('filename','file_contents')
     :param stop_list_path: [list, of, stop, words]
@@ -638,16 +657,19 @@ def processRDD(rdd, stop_list_path=None):
 
     #logTimeIntervalWithMsg("##### BUILDING (file, word) tuples #####")
     stop_list = stopList(stop_list_path)
+    wordsplit = re.compile('\W+',re.UNICODE)
+
 
     flatmapped_rdd = rdd.flatMap(lambda (iebook_id, words):
                                 ([(iebook_id, remPlural(word))
-                                 for word in re.split('\W+', decode(words))
+                                 for word in re.split(wordsplit, decode(decode_unicode,words))
                                  if len(word) > 0
                                  and word not in stop_list
                                  and remPlural(word) not in stop_list]))
 
     #print ("flatmappedRDD {}".format(flatmappedRDD.take(1)))
     # logTimeIntervalWithMsg("flatmappedRDD {}".format(flatmappedRDD.take(1)))
+
     wordcount_per_file_rdd = wordCountPerFile(flatmapped_rdd)
     #print ("wordCountPerFileRDD {}".format(wordCountPerFileRDD.take(1)))
 
@@ -723,6 +745,7 @@ if __name__ == "__main__":
     normalise_word_frequencies = parsed_args['n'] if 'n' in parsed_args else None
     filter_files = parsed_args['f'] if 'f' in parsed_args else None
     max_file_size = int(parsed_args['max']) if 'max'in parsed_args else None
+    decode_unicode = parsed_args['d'] if 'd' in parsed_args else None
 
     '''
      example usages
@@ -772,6 +795,8 @@ if __name__ == "__main__":
         # file-by-file processing- faster but cannot filter for maximum file sizes
         rx_body_text = bodyTextRegex()
         rdd = rddOfWholeTextFileRDDs(text_path)
+        print("\ninput_rdd: {}".format(rdd.collect()))
+
         rdd = rddWithHeadersRemovedIndexedByID(rdd, rx_id, rx_body_text, regex_filters)
 
 
@@ -785,7 +810,7 @@ if __name__ == "__main__":
     # and ensure that other_encoding was transcoded to utf8.
     rdd = rdd.reduceByKey(lambda x,y: x)
 
-    rdd = processRDD(rdd,stop_list_path) #.persist(sc.StorageLevel.MEMORY_AND_DISK)
+    rdd = processRDD(rdd,stop_list_path,decode_unicode) #.persist(sc.StorageLevel.MEMORY_AND_DISK)
     word_count_per_file_pickle = pickled(rdd)
     logTimeIntervalWithMsg ("finished processRDD") #161
     print("word_count_per_file: {}".format(rdd.take(5)))
@@ -804,11 +829,13 @@ if __name__ == "__main__":
    # filePrint("tmpFile{}".format(pickle_file))
 
    # filePrint ("tmpFile reread {}".format(pickleRDD.collect()))
+    rdd = unpickled(sc,word_count_per_file_pickle)
 
-    rdd = sc.pickleFile(word_count_per_file_pickle, 3)
-    #print("pre: {}".format(rdd.take(5)))
-    rdd = rdd.map (lambda (a,b) : (b[0][0],[((a,b[0][1]))]))
-    print("word_rdd: {}".format(rdd.take(5)))
+    idf_rdd = idfFromWordCountsPerFile(rdd)
+
+    print("\nidf_rdd: {}".format(idf_rdd.collect()))
+
+
     '''
     e) Calculate the IDF values and save the list of (word,IDF) pairs for later use.
 
