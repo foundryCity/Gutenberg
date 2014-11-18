@@ -66,7 +66,7 @@ def logTimeIntervalWithMsg(msg):
     if 1:
         time_deltas = timeDeltas()
         message = msg if msg else ""
-        string = "total time:{0[time_since_start]:7,.3f} time since:{0[time_since_last]:7,.3f}  {1:}".format(time_deltas, message)
+        string = ":{0[time_since_start]:7,.3f} :{0[time_since_last]:7,.3f}  {1:}".format(time_deltas, message)
         filePrint(string)
 
 
@@ -246,6 +246,18 @@ def germanRegex():
         ,flags=re.MULTILINE|re.UNICODE)
     return regex
 
+def encodingRegex():
+    """
+    regex to match character set encoding line in header
+    :return:
+    """
+    logfuncWithArgs()
+
+    regex = re.compile(
+        ur'^Character set encoding: (\w+)'
+        ,flags=re.MULTILINE|re.UNICODE)
+    return regex
+
 def frenchRegex():
     """
     regex to match French texts
@@ -304,6 +316,20 @@ def headerRegex():
         ,flags=re.MULTILINE|re.UNICODE)
      return regex
 
+
+def footerRegex():
+     """
+     regex to match header lines
+     used in per-line processing
+     :return: compiled regex
+     """
+     logfuncWithArgs()
+
+     regex = re.compile(
+        ur"^(\*{3} *END OF TH(?:IS|E) PROJECT GUTENBERG[^\*]+\*{3})"  #end of header
+        ,flags=re.MULTILINE|re.UNICODE)
+     return regex
+
 def bodyTextRegex():
      """
      regex to match body text following header line
@@ -356,7 +382,7 @@ def searchWithRegex(txt,regex):
         result = match.group(1)
     return result
 
-def extractIdAndBodyTextWithFilters(txt,rx_id,rx_body_text,regex_filters=None):
+def extractIdAndBodyTextWithFilters(txt,rx_id,rx_body_text,rx_header, rx_footer, rx_encoding,regex_filters=None):
     """
     used by rddWithHeadersRemovedIndexedByID() in per-file processing
     :param txt: text to search (will be one file)
@@ -369,28 +395,45 @@ def extractIdAndBodyTextWithFilters(txt,rx_id,rx_body_text,regex_filters=None):
     """
     id_text = "_"
     body_text = "_"
-    id_match = rx_id.search(txt)
-    body_match = rx_body_text.search(txt)
+    header = None
+    body = None
+    encoding = 1
+    id_match = None
+    body_match = None
+    split_txt = rx_header.split(txt)
+    if len(split_txt) == 3:
+        header = split_txt[0]
+        body = split_txt[2]
+        included = 1
+        if regex_filters:
+            included = 0
+            excluded = searchTextWithRegexes(header,regex_filters['exclusions']) if regex_filters['exclusions'] else 0
+            if not excluded:
+                included = searchTextWithRegexes(header,regex_filters['inclusions']) if regex_filters['inclusions'] else 1
 
-    #if we are filtering for language, we want to accept all ENGLISH texts and all ASCII-encoded texts
-    # - some ASCII texts are flagged as language: (English and...), we want to keep these in
-    # - english texts encoded as unicode will read correctly as unicode is a superset of ASCII
-    #excluded = searchTextWithRegexes(txt,exclusions) if exclusions else None
-    #if not excluded:
-    included = 1
-    #print("regex_filters {}".format(regex_filters))
-    if regex_filters:
-        included = 0
-        excluded = searchTextWithRegexes(txt,regex_filters['exclusions']) if regex_filters['exclusions'] else 0
-        if not excluded:
-            included = searchTextWithRegexes(txt,regex_filters['inclusions']) if regex_filters['inclusions'] else 1
+        if included and body:
+            id_match = rx_id.search(header)
+            if id_match:
+                split_txt = rx_footer.split(body)
+                if len(split_txt) == 3:
+                    body_text = split_txt[0]
+                else:
+                    body_text = body
+                id_text = id_match.group(1)
+                encoding_match = rx_encoding.search(header)
+                if encoding_match:
+                    encoding_txt = encoding_match.group(1)
+                    if encoding_txt == 'utf':
+                        encoding = 3
+                    elif encoding_txt == 'ASCII':
+                        encoding = 2
+                    else:
+                        encoding = 1
+                        #decode ISO encodings otherwise the words break on non-ascii characters
+                        body_text = decode(1,body_text)
 
-    if included:
-        if id_match:
-            id_text = id_match.group(1)
-        if body_match:
-            body_text = body_match.group(1)
-    result = (id_text,body_text)
+    result = (id_text,(encoding,body_text))
+    #print "result: {}".format(result)
     return result
 
 
@@ -520,6 +563,7 @@ def wordCountPerFile(rdd):
     logTimeIntervalWithMsg ('starting wordCountPerFile')
     #logTimeIntervalWithMsg("##### BUILDING wordCountPerFile #####")
     wcf = rdd.map(lambda(x): ((x[0], x[1]), 1))
+    #print("\nwcf: {}".format(wcf.collect()))
 
     #logTimeIntervalWithMsg('##### GETTING THE  ((file,word),n)\
     # WORDCOUNT PER (DOC, WORD) #####')
@@ -619,14 +663,14 @@ def rddOfTextFilesByLine(path, rx_id, rx_header,regex_filters,max_file_size):
 
 
 
-def idfFromWordCountsPerFile(rdd):
+def idf(word_count_per_file_rdd):
     """
     :param rdd: array of (file,[(word,count),(word,count)...] )
     :return: idf: array of [( word,idf)] ) where idf = log (N/doc-frequency)
     """
-    #print("pre: {}".format(rdd.collect()))
-    number_of_documents = rdd.count()
-    rdd = rdd.map (lambda (a,b) : (a,[(tuple[0],(a,tuple[1])) for tuple in b]))
+    #print("pre: {}".format(word_count_per_file_rdd.collect()))
+    number_of_documents = word_count_per_file_rdd.count()
+    rdd = word_count_per_file_rdd.map (lambda (a,b) : (a,[(tuple[0],(a,tuple[1])) for tuple in b]))
 
     #print("\nintermediate_rdd: {}".format(rdd.collect()))
     rdd = rdd.flatMap(lambda a:a[1])
@@ -679,16 +723,17 @@ def processRDD(rdd, stop_list_path,decode_unicode):
 
 
 
-def rddWithHeadersRemovedIndexedByID(rdd, rx_id, rx_body_text, regex_filters=None):
+def rddWithHeadersRemovedIndexedByID(rdd, rx_id, rx_body_text,rx_header,rx_footer,rx_encoding, regex_filters=None):
     """
     b)From the text files you need to remove the header.
     The last line of the header starts and ends with ***.
     c)You need to extract the ID of the text,
     which occurs in the header in the format [EBook #<ID>],
     where ID is a natural number.
+    return: [(book_id,(encoding_val,txt))...]
     """
-    rdd = rdd.map(lambda x:extractIdAndBodyTextWithFilters(x[1],rx_id,rx_body_text, regex_filters)) \
-              .filter(lambda (iebook_id,txt): iebook_id is not "_" and txt is not "_")
+    rdd = rdd.map(lambda x:extractIdAndBodyTextWithFilters(x[1],rx_id,rx_body_text,rx_header,rx_footer,rx_encoding, regex_filters)) \
+              .filter(lambda (iebook_id,txt_tuple): iebook_id is not "_")
     return rdd
 
 
@@ -721,24 +766,18 @@ if __name__ == "__main__":
     g_filehandle = open(logfile, 'a')
 
 
-    sparkConf = SparkConf()
-    sparkConf.setMaster("local[4]").setAppName("project")
-    #sparkConf.set("spark.local.dir","/Volumes/jScratch/_new_scratch/tmp")
-    sparkConf.set("spark.logConf","true")
-    sparkConf.set("spark.executor.memory","6g")
-
-    sc = SparkContext(conf=sparkConf)
 
     '''END OF INITIALISATION'''
+
+    filePrint("\n\nstarted run at {}".format(timestring()))
+
 
     parsed_args = parseArgs(sys.argv)
     if len(parsed_args) < 1:
         printHelp()
         exit(-1)
 
-    filePrint("\n\nstarted run at {}".format(timestring()))
-    logTimeIntervalWithMsg ("{}".format(parsed_args))
-    logTimeIntervalWithMsg("sparkConf.toDebugString() {}".format(sparkConf.toDebugString()))
+
 
     text_path = parsed_args['t'] if 't' in parsed_args else sys.argv[1]
     stop_list_path = parsed_args['s'] if 's' in parsed_args else []
@@ -746,11 +785,37 @@ if __name__ == "__main__":
     filter_files = parsed_args['f'] if 'f' in parsed_args else None
     max_file_size = int(parsed_args['max']) if 'max'in parsed_args else None
     decode_unicode = parsed_args['d'] if 'd' in parsed_args else None
+    cores = parsed_args['c'] if 'c' in parsed_args else 4
+    mem = parsed_args['m'] if 'm' in parsed_args else 8
+    parrellelismMultiplier = int(parsed_args['p']) if 'p' in parsed_args else 4
+
+
+    masterConfig = "local[{}]".format(cores)
+    memoryConfig = "{}g".format(mem)
+    parallelismConfig = "{}".format(cores*parrellelismMultiplier)
+    sparkConf = SparkConf()
+    sparkConf.setMaster(masterConfig).setAppName("project")
+    sparkConf.set("spark.logConf","true")
+    sparkConf.set("spark.executor.memory",memoryConfig)
+    sparkConf.set("spark.default.parallelism",parallelismConfig)
+    sc = SparkContext(conf=sparkConf)
+
+
+    logTimeIntervalWithMsg ("{}".format(parsed_args))
+    logTimeIntervalWithMsg("sparkConf.toDebugString() {}".format(sparkConf.toDebugString()))
 
     '''
      example usages
-     spark-submit  --driver-memory 8G project.py t=data/text_party s=stopwords_en.txt f=1
+
+     first ensure
+        ulimit -a //lists current settings
+     ulimit -n 4096
+     spark-submit  --driver-memory 8g project.py t=data/text_9 s=stopwords_en.txt f=1
+
+     spark-submit  --driver-memory 8g project.py t=data/text_party s=stopwords_en.txt f=1
      spark-submit project.py t=data/text_party s=stopwords_en.txt n=1 f=1 max=100000
+     ensure ulimit is as high as possible
+
 
     '''
 
@@ -784,36 +849,36 @@ if __name__ == "__main__":
 
     rx_id = idRegex()
 
-
-
     if max_file_size:
         # line-by-line processing: this is slower but allows us to filter for maximum file sizes
         rx_header = headerRegex()
         rdd = rddOfTextFilesByLine(text_path,rx_id,rx_header,regex_filters,max_file_size)
+        # remove duplicates is implemented with this reduceByKey method.
+        # if we encounter more than one text with
+        # the same bookID we will only use the first.
+        rdd = rdd.reduceByKey(lambda x,y: x)
 
     else:
         # file-by-file processing- faster but cannot filter for maximum file sizes
         rx_body_text = bodyTextRegex()
+        rx_header = headerRegex()
+        rx_footer = footerRegex()
+        rx_encoding = encodingRegex()
         rdd = rddOfWholeTextFileRDDs(text_path)
-        print("\ninput_rdd: {}".format(rdd.collect()))
-
-        rdd = rddWithHeadersRemovedIndexedByID(rdd, rx_id, rx_body_text, regex_filters)
-
+        rdd = rddWithHeadersRemovedIndexedByID(rdd, rx_id, rx_body_text,rx_header,rx_footer,rx_encoding, regex_filters)
+        # remove duplicates is implemented with this reduceByKey method.
+        # our input rdd is (id,(0,file),(id(1,file))... where 2 is best encoding (utf8) and 0 is worst(iso)
+        rdd = rdd.reduceByKey(lambda x,y:  x if x[1][0] > y[1][0] else y)\
+                         .map(lambda x:(x[0],x[1][1]))
 
     logTimeIntervalWithMsg ("about to start processRDD") #161
 
-    # remove duplicates is implemented with this reduceByKey method.
-    # if we encounter more than one text with
-    # the same bookID we will only use the first. These texts are identical but
-    # use different encodings (ASCII, utf8 etc).
-    # a better implementation would select in order of preference: utf8,other_encoding, ascii
-    # and ensure that other_encoding was transcoded to utf8.
-    rdd = rdd.reduceByKey(lambda x,y: x)
 
     rdd = processRDD(rdd,stop_list_path,decode_unicode) #.persist(sc.StorageLevel.MEMORY_AND_DISK)
-    word_count_per_file_pickle = pickled(rdd)
+    # word_count_per_file_pickle = pickled(rdd)
+    word_count_per_file_rdd = rdd.cache()
     logTimeIntervalWithMsg ("finished processRDD") #161
-    print("word_count_per_file: {}".format(rdd.take(5)))
+    #print("word_count_per_file: {}".format(rdd.take(5)))
 
     #print("word_frequency_per_file_rdd: {}".format(word_frequency_per_file_rdd.take(1)))
 
@@ -822,18 +887,21 @@ if __name__ == "__main__":
 
     logTimeIntervalWithMsg ("finished normalising") #161
 
-    logTimeIntervalWithMsg ("input files: {} found texts: {}".format(number_of_input_files,rdd.count())) #161
+    logTimeIntervalWithMsg ("input files: {} found texts: {}"
+                            .format(number_of_input_files,rdd.count())) #161
 
+    #print("\nwordFreqPerFile: {}".format(rdd.take(1)))
 
     word_frequency_per_file_pickle = pickled(rdd)
    # filePrint("tmpFile{}".format(pickle_file))
 
    # filePrint ("tmpFile reread {}".format(pickleRDD.collect()))
-    rdd = unpickled(sc,word_count_per_file_pickle)
+   # word_count_per_file_rdd = unpickled(sc,word_count_per_file_pickle)
 
-    idf_rdd = idfFromWordCountsPerFile(rdd)
+    idf_rdd = idf(word_count_per_file_rdd)
+    print("\nidf_rdd: {}".format(idf_rdd.take(2)))
 
-    print("\nidf_rdd: {}".format(idf_rdd.collect()))
+    #print("\nidf_rdd: {}".format(idf_rdd.take(20)))
 
 
     '''
