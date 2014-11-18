@@ -32,7 +32,7 @@ def exceptionTraceBack(exctype, value, tb):
 '''LOGGING TRACEBACKS'''
 def timestring():
     cltime = localtime(time())
-    return "{}:{}:{}".format(cltime.tm_hour,cltime.tm_min,cltime.tm_sec)
+    return "{:02d}:{:02d}:{:02d}".format(cltime.tm_hour,cltime.tm_min,cltime.tm_sec)
     #return "{}".format(cltime)
 
 def filePrint(string):
@@ -685,7 +685,69 @@ def idf(word_count_per_file_rdd):
     #print("\nidf: {}".format(rdd.collect()))
     return rdd
 
+def wordFreqPerDoc(word_count_per_file_rdd):
 
+    #print("\nwordFreqPerDoc input: {}".format(word_count_per_file_rdd.collect()))
+
+    rdd = normaliseWordFrequencies(word_count_per_file_rdd)
+    #print("\nnormalise: {}".format(rdd.collect()))
+
+    rdd = rdd.flatMap(lambda x:[(tuple[0],[(x[0],tuple[1])]) for tuple in x[1]])
+    #print("\nmap: {}".format(rdd.collect()))
+
+    #rdd = rdd.flatMap()
+    #print("\nflatMap: {}".format(rdd.collect()))
+
+    rdd = rdd.reduceByKey(add)
+    #print("\nreduceByKey: {}".format(rdd.collect()))
+    return rdd
+
+def wfidfFromJoining(idf_rdd,wf_per_doc):
+
+    rdd = idf_rdd.join(wf_per_doc)
+    #print("\njoin: {}".format(rdd.collect()))
+
+    rdd = rdd.map(lambda x:(x[0],[(tuple[0],(x[1][0]*tuple[1]))  for tuple in x[1][1]]))
+    #print("\nmap: {}".format(rdd.collect()))
+
+    rdd = rdd.flatMap(lambda x: [(tuple[0],[(x[0],tuple[1])]) for tuple in x[1] ])
+    #print("\nflatMap: {}".format(rdd.collect()))
+
+    rdd = rdd.reduceByKey(add)
+    #print("\nreduceByKey: {}".format(rdd.collect()))
+    return rdd
+
+def sign_hash(x):
+    return 1 if len(x) % 2 == 1 else -1
+
+def hashTable(tupleList, hashtable_size):
+    '''
+    :param tupleList: list of tuples [(word,count),(word,count)...]
+    :param hashtable_size: int size of hash array
+    :return:hashTable
+    '''
+    #logfuncWithArgs()
+    hash_table = [0] * hashtable_size
+    for (word, count)in tupleList:
+        x = (hash(word) % hashtable_size) if hashtable_size else 0
+        hash_table[x] = hash_table[x] + sign_hash(word) * count
+    result = map(lambda x: abs(x), hash_table)
+    #print("\nhashTable: {}".format(result))
+
+    return result
+
+
+def vectorise(rdd,vec_size):
+    '''
+    :param wfidif_per_doc: rdd of (word,tf.idf) per doc [(docID, [(word,tf.idf),(word,tf.idf)...])
+    :param vec_size: int size of hash array
+    :return:hashTable per doc rdd   [(docID, [vector]...]
+
+    '''
+    rdd = rdd.map (lambda x:(x[0],hashTable(x[1],vec_size)))
+    #rint("\nvectorised: {}".format(rdd.collect()))
+
+    return rdd
 
 
 
@@ -882,8 +944,10 @@ if __name__ == "__main__":
 
     #print("word_frequency_per_file_rdd: {}".format(word_frequency_per_file_rdd.take(1)))
 
-    if normalise_word_frequencies:
-        rdd = normaliseWordFrequencies(rdd)
+    wf_per_doc = wordFreqPerDoc(word_count_per_file_rdd).cache()
+
+
+    #print("\nwf_per_doc: {}".format(wf_per_doc.collect()))
 
     logTimeIntervalWithMsg ("finished normalising") #161
 
@@ -892,14 +956,32 @@ if __name__ == "__main__":
 
     #print("\nwordFreqPerFile: {}".format(rdd.take(1)))
 
-    word_frequency_per_file_pickle = pickled(rdd)
+   # word_frequency_per_file_pickle = pickled(rdd)
    # filePrint("tmpFile{}".format(pickle_file))
 
    # filePrint ("tmpFile reread {}".format(pickleRDD.collect()))
    # word_count_per_file_rdd = unpickled(sc,word_count_per_file_pickle)
 
     idf_rdd = idf(word_count_per_file_rdd)
-    print("\nidf_rdd: {}".format(idf_rdd.take(2)))
+    #print ("idf keys: {}".format(idf_rdd.keys().collect()))
+
+
+    #print("\nidf_rdd: {}".format(idf_rdd.take(2)))
+
+
+    '''
+    f) (1) Calculate the TF.IDF values
+    '''
+    wfidf_rdd = wfidfFromJoining(idf_rdd,wf_per_doc)
+
+    '''
+    f) (2) create a 10000 dimensional vector per document using the hashing trick.
+    '''
+    vec_size = 10000
+
+    vectors = vectorise(wfidf_rdd,vec_size)
+    vectors_pickle = pickled(vectors)
+
 
     #print("\nidf_rdd: {}".format(idf_rdd.take(20)))
 
@@ -914,12 +996,10 @@ if __name__ == "__main__":
 
     from file [(word,count),(word,count),(word),coutn
     word [(file,count),(file,count),(file,count)]
-   '''
+    '''
 
 
-    '''
-    f) Calculate the TF.IDF values and create a 10000 dimensional vector per document using the hashing trick.
-    '''
+
 
 
 
