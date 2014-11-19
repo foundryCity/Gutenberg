@@ -10,12 +10,15 @@ from time import time
 from time import localtime
 from pyspark import SparkContext
 from pyspark.conf import SparkConf
+from pyspark.serializers import MarshalSerializer
 import inspect
 import os
 import sys
 import traceback
 from tempfile import NamedTemporaryFile
 import math
+import xml.etree.ElementTree as ET
+#from lxml import etree
 
 from unidecode import unidecode
 
@@ -605,6 +608,28 @@ def rddOfWholeTextFileRDDs(path):
 
 ''' PROCESSING PER LINE'''''
 
+def rddOfMetaFiles(path):
+    (location, folders, files) = walk(path).next()
+    for filename in files:
+        print '.',
+        filepath = os.path.join(location, filename)
+        if filename != '.DS_Store':
+            file = open(filepath)
+            rdf = file.read()
+            tree = ET.parse(filepath)
+            root = tree.getroot()
+            for child in root:
+                print("xml: {}".format(child.tag, child.attrib))
+
+            for pgterms in root.findall('pgterms:ebook'):
+                print("pgterms: {}".format(child.tag, child.attrib))
+
+
+    for folder in folders:
+         sub_path = os.path.join(location, folder)
+         rddOfMetaFiles(sub_path)
+
+
 def rddOfTextFilesByLine(path, rx_id, rx_header,regex_filters,max_file_size):
     """
     read in textFiles using sc.textFile()
@@ -759,7 +784,7 @@ def processRDD(rdd, stop_list_path,decode_unicode):
     :param stop_list_path: [list, of, stop, words]
     :return:wordCountPerFileRDD [(filename,[(word,count)][(word,count)]...)]
     """
-    logfuncWithArgs()
+    logfuncWithVals()
 
     #logTimeIntervalWithMsg("##### BUILDING (file, word) tuples #####")
     stop_list = stopList(stop_list_path)
@@ -826,6 +851,10 @@ if __name__ == "__main__":
     logfile = 'out.txt'
     logfile = os.path.abspath(logfile)
     g_filehandle = open(logfile, 'a')
+    eventLogDir = 'data/eventLog'
+    eventLogDir = os.path.abspath(eventLogDir)
+    recoveryDir = 'data/recovery'
+    recoveryDir = os.path.abspath(eventLogDir)
 
 
 
@@ -840,16 +869,15 @@ if __name__ == "__main__":
         exit(-1)
 
 
-
     text_path = parsed_args['t'] if 't' in parsed_args else sys.argv[1]
     stop_list_path = parsed_args['s'] if 's' in parsed_args else []
-    normalise_word_frequencies = parsed_args['n'] if 'n' in parsed_args else None
     filter_files = parsed_args['f'] if 'f' in parsed_args else None
     max_file_size = int(parsed_args['max']) if 'max'in parsed_args else None
     decode_unicode = parsed_args['d'] if 'd' in parsed_args else None
     cores = parsed_args['c'] if 'c' in parsed_args else 4
     mem = parsed_args['m'] if 'm' in parsed_args else 8
     parrellelismMultiplier = int(parsed_args['p']) if 'p' in parsed_args else 4
+    meta_path = parsed_args['meta'] if 'meta' in parsed_args else None
 
 
     masterConfig = "local[{}]".format(cores)
@@ -860,7 +888,12 @@ if __name__ == "__main__":
     sparkConf.set("spark.logConf","true")
     sparkConf.set("spark.executor.memory",memoryConfig)
     sparkConf.set("spark.default.parallelism",parallelismConfig)
-    sc = SparkContext(conf=sparkConf)
+    sparkConf.set("spark.eventLog.enabled","true")
+    sparkConf.set("spark.eventLog.dir",eventLogDir)
+    sparkConf.set("spark.deploy.recoveryMode","FILESYSTEM")
+    sparkConf.set("spark.deploy.recoveryDirectory",recoveryDir)
+
+    sc = SparkContext(conf=sparkConf,serializer=MarshalSerializer())
 
 
     logTimeIntervalWithMsg ("{}".format(parsed_args))
@@ -872,7 +905,7 @@ if __name__ == "__main__":
      first ensure
         ulimit -a //lists current settings
      ulimit -n 4096
-     spark-submit  --driver-memory 8g project.py t=data/text_9 s=stopwords_en.txt f=1
+     spark-submit  --driver-memory 8g project.py t=data/text-part s=stopwords_en.txt
 
      spark-submit  --driver-memory 8g project.py t=data/text_party s=stopwords_en.txt f=1
      spark-submit project.py t=data/text_party s=stopwords_en.txt n=1 f=1 max=100000
@@ -898,6 +931,8 @@ if __name__ == "__main__":
     save it to disk for later use.
 
     '''
+    if meta_path:
+        rddOfMetaFiles(meta_path)
 
     number_of_input_files = numberOfInputFiles(text_path)
     logTimeIntervalWithMsg ("input files: {} ".format(number_of_input_files)) #161
@@ -937,22 +972,23 @@ if __name__ == "__main__":
 
 
     rdd = processRDD(rdd,stop_list_path,decode_unicode) #.persist(sc.StorageLevel.MEMORY_AND_DISK)
-    # word_count_per_file_pickle = pickled(rdd)
-    word_count_per_file_rdd = rdd.cache()
+    word_count_per_file_pickle = pickled(rdd)
+    #word_count_per_file_rdd = rdd.cache()
     logTimeIntervalWithMsg ("finished processRDD") #161
     #print("word_count_per_file: {}".format(rdd.take(5)))
 
     #print("word_frequency_per_file_rdd: {}".format(word_frequency_per_file_rdd.take(1)))
 
-    wf_per_doc = wordFreqPerDoc(word_count_per_file_rdd).cache()
+    wf_per_doc = wordFreqPerDoc(unpickled(word_count_per_file_pickle))
+
+    wf_per_doc_pickle = pickled(wf_per_doc)
 
 
     #print("\nwf_per_doc: {}".format(wf_per_doc.collect()))
 
     logTimeIntervalWithMsg ("finished normalising") #161
 
-    logTimeIntervalWithMsg ("input files: {} found texts: {}"
-                            .format(number_of_input_files,rdd.count())) #161
+
 
     #print("\nwordFreqPerFile: {}".format(rdd.take(1)))
 
@@ -962,7 +998,11 @@ if __name__ == "__main__":
    # filePrint ("tmpFile reread {}".format(pickleRDD.collect()))
    # word_count_per_file_rdd = unpickled(sc,word_count_per_file_pickle)
 
-    idf_rdd = idf(word_count_per_file_rdd)
+    '''
+    e) Calculate the IDF values and save the list of (word,IDF) pairs for later use.
+
+    '''
+    idf_rdd = idf(unpickled(word_count_per_file_pickle))
     #print ("idf keys: {}".format(idf_rdd.keys().collect()))
 
 
@@ -972,7 +1012,7 @@ if __name__ == "__main__":
     '''
     f) (1) Calculate the TF.IDF values
     '''
-    wfidf_rdd = wfidfFromJoining(idf_rdd,wf_per_doc)
+    wfidf_rdd = wfidfFromJoining(idf_rdd,unpickled(wf_per_doc_pickle))
 
     '''
     f) (2) create a 10000 dimensional vector per document using the hashing trick.
@@ -985,22 +1025,50 @@ if __name__ == "__main__":
 
     #print("\nidf_rdd: {}".format(idf_rdd.take(20)))
 
+    logTimeIntervalWithMsg ("input files: {} found texts: {}"
+                            .format(number_of_input_files,vectors.count())) #161
 
     '''
-    e) Calculate the IDF values and save the list of (word,IDF) pairs for later use.
 
-     Use the list of (file, [(word,count) ... (word,count)]) again to ,\
-    \n create a new RDD by reorganising the tuples and lists such that\
-    \n the words are the keys and count the occurrences of words per file\
-    \n using map(). \n"
-
-    from file [(word,count),(word,count),(word),coutn
-    word [(file,count),(file,count),(file,count)]
+    SECTION 2
+    2 Reading and preparing metadata from XML (15%)
+    a) Read the metadata files from the meta directory as files (not RDDs).
+    b) Parse the XML (will be covered after Reading week).
     '''
 
 
 
 
+    '''
+
+
+
+    c) Extract the subjects and the ID which is given in pgterms:ebook element as the rdf:about attribute in the form ebooks/<ID>. The subjects are given in the metadata, both in free text and using subject codes according to the Dublin Core standard (mostly in the Library of Congress
+    1
+    2 TILLMAN WEYDE, DANIEL WOLFF, SON N. TRAN
+    Classification).
+    d) Store the subject lists per file as an RDD for later use.
+
+    3 Training classifiers (30%)
+    a) Find the 10 most frequent subjects.
+    b) For each of these subjects, build a classifier (contains/does not contain the subject) using:
+    i) Naive Bayes
+    ii) Decision trees
+    iii) Logistic regression
+    c) Find the best regularisation values for Decision Trees and Logistic Regression using Cross Validation and document the training validation and and testing error for each classification method and each regularisation value.
+    4 Efficiency, measurements, and discussion. (30%)
+    a) Experiment with different Vector sizes and document the changes in accuracy, running time and memory usage (will be covered after reading week).
+    b) Discuss the results of task 4a) and those of task 3) with respect to the known complexities of the used algorithms.
+    c) Discuss possible application scenarios and for the classification, and what suitable extensions or optimisations in those scenarios are. Possible aspects to consider are: the encoded subject classes, user needs, natural languages, and the related technical requirements.
+    5 Task for pairs Further improvements. (40%)
+    a) Double hash vector.
+    i) Implement a feature vector that is divided into to parts of similar but different size, apply the same hash function, but perform the modulo operation separately for each part.
+    ii) Compare this version experimentally with the previous version in terms of accuracy. iii) Document and interpret the results of your test.
+    b) Estimating the author's year of birth. This is an experimental task to see whether we can find stylistic properties of an English text the enable us to estimate the time of the authors birth.
+    a) Extract the author's year of birth from the metadata.
+    b) Train a linear regression model (LassoWithSGD from mllib) on the TF.IDF vectors. c) Discuss the results and options for improvement.
+
+    '''
 
 
 
