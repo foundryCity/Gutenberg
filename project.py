@@ -10,6 +10,7 @@ from time import time
 from time import localtime
 from pyspark import SparkContext
 from pyspark.conf import SparkConf
+from pyspark import StorageLevel
 from pyspark.serializers import MarshalSerializer
 import inspect
 import os
@@ -161,11 +162,13 @@ def numberOfInputFiles(path):
 
 '''OUTPUT'''
 
-def pickled(rdd):
-    tmp = NamedTemporaryFile(delete=True)
-    tmp.close()
-    rdd.saveAsPickleFile(tmp.name,3)
-    return tmp.name
+def pickled(rdd, name=None):
+    if not name:
+        tmp = NamedTemporaryFile(delete=True)
+        tmp.close()
+        name = tmp.name
+    rdd.saveAsPickleFile(name,3)
+    return name
 
 def unpickled(sc,pickle_name):
     rdd = sc.pickleFile(pickle_name, 3)
@@ -597,10 +600,13 @@ def rddOfWholeTextFileRDDs(path):
     :param path: path to text files
     :return: rdd of text files
     """
+    global g_counter
+    g_counter += 1
+    print ' '+str(g_counter)+' ',
+
     rdd = sc.wholeTextFiles(path)
     (location, folders, files) = walk(path).next()
     for folder in folders:
-        print '.',
 
         sub_path = os.path.join(location, folder)
         rdd = rdd.union(rddOfWholeTextFileRDDs(sub_path))
@@ -688,13 +694,14 @@ def rddOfTextFilesByLine(path, rx_id, rx_header,regex_filters,max_file_size):
 
 
 
-def idf(word_count_per_file_rdd):
+def idf(word_count_per_file_rdd,number_of_documents):
     """
     :param rdd: array of (file,[(word,count),(word,count)...] )
     :return: idf: array of [( word,idf)] ) where idf = log (N/doc-frequency)
     """
+    logTimeIntervalWithMsg("idf: starting...")
+
     #print("pre: {}".format(word_count_per_file_rdd.collect()))
-    number_of_documents = word_count_per_file_rdd.count()
     rdd = word_count_per_file_rdd.map (lambda (a,b) : (a,[(tuple[0],(a,tuple[1])) for tuple in b]))
 
     #print("\nintermediate_rdd: {}".format(rdd.collect()))
@@ -702,17 +709,21 @@ def idf(word_count_per_file_rdd):
     #print("\nflatMap: {}".format(rdd.collect()))
     rdd = rdd.map(lambda x:(x[0],1))
     #print("\nmap: {}".format(rdd.collect()))
+    logTimeIntervalWithMsg("idf: reduceByKey...")
 
     rdd = rdd.reduceByKey(add)
     #print("\nreduce: {}".format(rdd.collect()))
 
     rdd = rdd.map(lambda x:(x[0],math.log(number_of_documents/float(x[1]),2)))
-    #print("\nidf: {}".format(rdd.collect()))
+    #print("oo\nidf: {}".format(rdd.collect()))
+    logTimeIntervalWithMsg("idf: finished")
+
     return rdd
 
 def wordFreqPerDoc(word_count_per_file_rdd):
 
     #print("\nwordFreqPerDoc input: {}".format(word_count_per_file_rdd.collect()))
+    logTimeIntervalWithMsg("wordFreqPerDoc: starting")
 
     rdd = normaliseWordFrequencies(word_count_per_file_rdd)
     #print("\nnormalise: {}".format(rdd.collect()))
@@ -722,13 +733,14 @@ def wordFreqPerDoc(word_count_per_file_rdd):
 
     #rdd = rdd.flatMap()
     #print("\nflatMap: {}".format(rdd.collect()))
-
+    logTimeIntervalWithMsg("wordFreqPerDoc: reduceByKey...")
     rdd = rdd.reduceByKey(add)
+    logTimeIntervalWithMsg("wordFreqPerDoc: finished")
     #print("\nreduceByKey: {}".format(rdd.collect()))
     return rdd
 
 def wfidfFromJoining(idf_rdd,wf_per_doc):
-
+    logTimeIntervalWithMsg("wfidfFromJoining: starting...")
     rdd = idf_rdd.join(wf_per_doc)
     #print("\njoin: {}".format(rdd.collect()))
 
@@ -737,9 +749,12 @@ def wfidfFromJoining(idf_rdd,wf_per_doc):
 
     rdd = rdd.flatMap(lambda x: [(tuple[0],[(x[0],tuple[1])]) for tuple in x[1] ])
     #print("\nflatMap: {}".format(rdd.collect()))
+    logTimeIntervalWithMsg("wfidfFromJoining: reduceByKey...")
 
     rdd = rdd.reduceByKey(add)
     #print("\nreduceByKey: {}".format(rdd.collect()))
+    logTimeIntervalWithMsg("wfidfFromJoining: finished")
+
     return rdd
 
 def sign_hash(x):
@@ -769,6 +784,7 @@ def vectorise(rdd,vec_size):
     :return:hashTable per doc rdd   [(docID, [vector]...]
 
     '''
+    logTimeIntervalWithMsg("vectorise...")
     rdd = rdd.map (lambda x:(x[0],hashTable(x[1],vec_size)))
     #rint("\nvectorised: {}".format(rdd.collect()))
 
@@ -823,7 +839,107 @@ def rddWithHeadersRemovedIndexedByID(rdd, rx_id, rx_body_text,rx_header,rx_foote
               .filter(lambda (iebook_id,txt_tuple): iebook_id is not "_")
     return rdd
 
+'''M E T A    D A T A '''
 
+def ebookID(ebook_node):
+    for key in ebook_node.attrib:
+        if re.search('about',key):
+            id = ebook_node.attrib[key]
+            #return id
+            regex = re.compile(r'ebooks\/(\d+)')
+            match = regex.match(id)
+            if (match):
+                return match.group(1)
+        else:
+            return None
+
+def subjectTuple(subject_node):
+    #print ("subject_node: {}".format(subject_node))
+    #3print ("subject_node attrib: {}".format(subject_node.attrib))
+    subject_id = ""
+    subject_txt = ""
+    for Description in subject_node:
+        if re.search('Description',Description.tag):
+            for nodeID in Description.attrib:
+                if re.search('nodeID',nodeID):
+                    subject_id = Description.attrib[nodeID]
+                    #print ("ID attrib: {}".format(Description.attrib))
+            for value in Description:
+                if re.search('value',value.tag):
+                    #print ("value text: {}".format(value.text))
+                    subject_txt = value.text
+
+    return (subject_id, subject_txt)
+
+
+def subjectDict(subject_node):
+    #print ("subject_node: {}".format(subject_node))
+    #3print ("subject_node attrib: {}".format(subject_node.attrib))
+    subject = {'subject_id':None,'subject_txt':None}
+    for Description in subject_node:
+        if re.search('Description',Description.tag):
+            for nodeID in Description.attrib:
+                if re.search('nodeID',nodeID):
+                    subject['subject_id'] = Description.attrib[nodeID]
+                    #print ("ID attrib: {}".format(Description.attrib))
+            for value in Description:
+                if re.search('value',value.tag):
+                    #print ("value text: {}".format(value.text))
+                    subject['subject_txt'] = value.text
+
+    return subject
+
+def arrayOfMetadataArrays(path, metadata=[]):
+    count = 0
+    (location, folders, files) = os.walk(path).next()
+    for filename in files:
+        filepath = os.path.join(location, filename)
+        if filename != '.DS_Store':
+            count += 1
+            print str(count)+' ',
+            metaArray = []
+            tree = ET.parse(filepath)
+            root = tree.getroot()
+            for ebook in root:
+                if re.search('ebook',ebook.tag):
+                    metaArray.append(ebookID(ebook))
+                    metadata.append(metaArray)
+                    metaArray.append([])
+                    for subject in ebook:
+                       if re.search('subject',subject.tag):
+                              metaArray[1].append(subjectTuple(subject))
+    for folder in folders:
+         sub_path = os.path.join(location, folder)
+         arrayOfMetadataArrays(sub_path,metadata)
+
+    return metadata
+
+
+
+def arrayOfMetadata(path, metadata=[]):
+    count = 0
+    (location, folders, files) = os.walk(path).next()
+    for filename in files:
+        filepath = os.path.join(location, filename)
+        if filename != '.DS_Store':
+            print str(len(metadata))+' ',
+            metadict = {}
+            metadict['filename'] = filename
+            tree = ET.parse(filepath)
+            root = tree.getroot()
+            for ebook in root:
+                if re.search('ebook',ebook.tag):
+                    metadict['ebook_id'] = ebookID(ebook)
+                    metadata.append(metadict)
+                    metadict['subjects']=[]
+                    for subject in ebook:
+                       if re.search('subject',subject.tag):
+                              metadict['subjects'].append(subjectDict(subject))
+    for folder in folders:
+         sub_path = os.path.join(location, folder)
+         arrayOfMetadata(sub_path,metadata)
+
+    return metadata
 
 ' THE MAIN LOOP '
 
@@ -835,11 +951,13 @@ if __name__ == "__main__":
     global s_time
     global is_time
     global g_start_time
+    global g_counter
 
     s_time = time()
     start_s_time = s_time
     is_time = s_time
     g_start_time = time()
+    g_counter = 0
 
     global found
     found = 0
@@ -854,8 +972,7 @@ if __name__ == "__main__":
     eventLogDir = 'data/eventLog'
     eventLogDir = os.path.abspath(eventLogDir)
     recoveryDir = 'data/recovery'
-    recoveryDir = os.path.abspath(eventLogDir)
-
+    recoveryDir = os.path.abspath(recoveryDir)
 
 
     '''END OF INITIALISATION'''
@@ -878,6 +995,8 @@ if __name__ == "__main__":
     mem = parsed_args['m'] if 'm' in parsed_args else 8
     parrellelismMultiplier = int(parsed_args['p']) if 'p' in parsed_args else 4
     meta_path = parsed_args['meta'] if 'meta' in parsed_args else None
+    pickling = parsed_args['p'] if 'p' in parsed_args else None
+    number_of_documents = int(parsed_args['n']) if 'n' in parsed_args else None
 
 
     masterConfig = "local[{}]".format(cores)
@@ -888,12 +1007,12 @@ if __name__ == "__main__":
     sparkConf.set("spark.logConf","true")
     sparkConf.set("spark.executor.memory",memoryConfig)
     sparkConf.set("spark.default.parallelism",parallelismConfig)
-    sparkConf.set("spark.eventLog.enabled","true")
+    sparkConf.set("spark.eventLog.enabled","false")
     sparkConf.set("spark.eventLog.dir",eventLogDir)
-    sparkConf.set("spark.deploy.recoveryMode","FILESYSTEM")
-    sparkConf.set("spark.deploy.recoveryDirectory",recoveryDir)
+    #sparkConf.set("spark.deploy.recoveryMode","FILESYSTEM")
+    #sparkConf.set("spark.deploy.recoveryDirectory",recoveryDir)
 
-    sc = SparkContext(conf=sparkConf,serializer=MarshalSerializer())
+    sc = SparkContext(conf=sparkConf)
 
 
     logTimeIntervalWithMsg ("{}".format(parsed_args))
@@ -931,102 +1050,120 @@ if __name__ == "__main__":
     save it to disk for later use.
 
     '''
-    if meta_path:
-        rddOfMetaFiles(meta_path)
 
-    number_of_input_files = numberOfInputFiles(text_path)
-    logTimeIntervalWithMsg ("input files: {} ".format(number_of_input_files)) #161
 
-    if filter_files:
-        logTimeIntervalWithMsg("filtering files...")
-        regex_filters = regexFilters()
-    else:
-        logTimeIntervalWithMsg("not filtering files...")
-        regex_filters=None
-
-    rx_id = idRegex()
-
-    if max_file_size:
-        # line-by-line processing: this is slower but allows us to filter for maximum file sizes
-        rx_header = headerRegex()
-        rdd = rddOfTextFilesByLine(text_path,rx_id,rx_header,regex_filters,max_file_size)
-        # remove duplicates is implemented with this reduceByKey method.
-        # if we encounter more than one text with
-        # the same bookID we will only use the first.
-        rdd = rdd.reduceByKey(lambda x,y: x)
+    meta_pickle = 'data/metapickle'
+    if meta_path and not os.path.exists(meta_pickle):
+        metadata = arrayOfMetadata(meta_path)
+        logTimeIntervalWithMsg ("metalen: {}".format(len(metadata)))
+        meta_pickle = pickled(sc.parallelize(metadata),meta_pickle)
+        print ("meta_pickle: {}".format(meta_pickle))
+        #meta_unpickled = unpickled(sc,meta_pickle)
 
     else:
-        # file-by-file processing- faster but cannot filter for maximum file sizes
-        rx_body_text = bodyTextRegex()
-        rx_header = headerRegex()
-        rx_footer = footerRegex()
-        rx_encoding = encodingRegex()
-        rdd = rddOfWholeTextFileRDDs(text_path)
-        rdd = rddWithHeadersRemovedIndexedByID(rdd, rx_id, rx_body_text,rx_header,rx_footer,rx_encoding, regex_filters)
-        # remove duplicates is implemented with this reduceByKey method.
-        # our input rdd is (id,(0,file),(id(1,file))... where 2 is best encoding (utf8) and 0 is worst(iso)
-        rdd = rdd.reduceByKey(lambda x,y:  x if x[1][0] > y[1][0] else y)\
-                         .map(lambda x:(x[0],x[1][1]))
-
-    logTimeIntervalWithMsg ("about to start processRDD") #161
+        print ("metadata already pickled")
 
 
-    rdd = processRDD(rdd,stop_list_path,decode_unicode) #.persist(sc.StorageLevel.MEMORY_AND_DISK)
-    word_count_per_file_pickle = pickled(rdd)
-    #word_count_per_file_rdd = rdd.cache()
-    logTimeIntervalWithMsg ("finished processRDD") #161
-    #print("word_count_per_file: {}".format(rdd.take(5)))
+    #meta_unpickled = unpickled(sc,meta_pickle)
+    #logTimeIntervalWithMsg ("meta_unpickled_size: {}".format(meta_unpickled.count()))
+    text_basename =  os.path.splitext(text_path)[0]
+    vector_pickle = "/tmp/abpj139/{}_pickle".format(text_basename)
+    if os.path.exists(vector_pickle):
+        number_of_input_files = 0
+        print ("{} already pickled: {}".format(text_basename,vector_pickle))
+        vectors = unpickled(sc,vector_pickle)
+    else:
+        number_of_input_files = numberOfInputFiles(text_path)
+        logTimeIntervalWithMsg ("input files: {} ".format(number_of_input_files)) #161
 
-    #print("word_frequency_per_file_rdd: {}".format(word_frequency_per_file_rdd.take(1)))
+        if filter_files:
+            logTimeIntervalWithMsg("filtering files...")
+            regex_filters = regexFilters()
+        else:
+            logTimeIntervalWithMsg("not filtering files...")
+            regex_filters=None
 
-    wf_per_doc = wordFreqPerDoc(unpickled(word_count_per_file_pickle))
+        rx_id = idRegex()
 
-    wf_per_doc_pickle = pickled(wf_per_doc)
+        if max_file_size:
+            # line-by-line processing: this is slower but allows us to filter for maximum file sizes
+            rx_header = headerRegex()
+            rdd = rddOfTextFilesByLine(text_path,rx_id,rx_header,regex_filters,max_file_size)
+            # remove duplicates is implemented with this reduceByKey method.
+            # if we encounter more than one text with
+            # the same bookID we will only use the first.
+            rdd = rdd.reduceByKey(lambda x,y: x)
+
+        else:
+            # file-by-file processing- faster but cannot filter for maximum file sizes
+            rx_body_text = bodyTextRegex()
+            rx_header = headerRegex()
+            rx_footer = footerRegex()
+            rx_encoding = encodingRegex()
+            rdd = rddOfWholeTextFileRDDs(text_path)
+            rdd = rddWithHeadersRemovedIndexedByID(rdd, rx_id, rx_body_text,rx_header,rx_footer,rx_encoding, regex_filters)
+            # remove duplicates is implemented with this reduceByKey method.
+            # our input rdd is (id,(0,file),(id(1,file))... where 2 is best encoding (utf8) and 0 is worst(iso)
+            rdd = rdd.reduceByKey(lambda x,y:  x if x[1][0] > y[1][0] else y)\
+                             .map(lambda x:(x[0],x[1][1]))
+
+        logTimeIntervalWithMsg ("about to start processRDD") #161
 
 
-    #print("\nwf_per_doc: {}".format(wf_per_doc.collect()))
+        word_count_per_file_rdd = None
+        word_count_per_file_pickle = None
+        wf_per_doc = None
+        wf_per_doc_pickle = None
+        idf_rdd = None
+        wfidf_rdd = None
 
-    logTimeIntervalWithMsg ("finished normalising") #161
+        if pickling:
+            word_count_per_file_rdd = processRDD(rdd,stop_list_path,decode_unicode) #.persist(sc.StorageLevel.MEMORY_AND_DISK)
+            number_of_documents = word_count_per_file_rdd.count() if number_of_documents is None else number_of_documents
+            word_count_per_file_pickle = pickled(word_count_per_file_rdd)
+            wf_per_doc = wordFreqPerDoc(word_count_per_file_rdd)
+            idf_rdd = idf(unpickled(sc,word_count_per_file_pickle))
+            wfidf_rdd = wfidfFromJoining(idf_rdd,unpickled(sc,wf_per_doc_pickle))
+
+        else:
+            word_count_per_file_rdd = processRDD(rdd,stop_list_path,decode_unicode).persist(StorageLevel.MEMORY_ONLY)
+            wf_per_doc = wordFreqPerDoc(word_count_per_file_rdd)
+            logTimeIntervalWithMsg("counting the docs...")
+            number_of_documents = word_count_per_file_rdd.count() if number_of_documents is None else number_of_documents
+            logTimeIntervalWithMsg("idf...")
+            idf_rdd = idf(word_count_per_file_rdd,number_of_documents)
+            wfidf_rdd = wfidfFromJoining(idf_rdd,wf_per_doc)
+
+        vec_size = 10000
+        vectors = vectorise(wfidf_rdd,vec_size)
+        vector_pickle = pickled(vectors,vector_pickle)
 
 
-
-    #print("\nwordFreqPerFile: {}".format(rdd.take(1)))
-
-   # word_frequency_per_file_pickle = pickled(rdd)
-   # filePrint("tmpFile{}".format(pickle_file))
-
-   # filePrint ("tmpFile reread {}".format(pickleRDD.collect()))
-   # word_count_per_file_rdd = unpickled(sc,word_count_per_file_pickle)
+    logTimeIntervalWithMsg ("input files: {} found texts: {}"
+                            .format(number_of_input_files,vectors.count()))
 
     '''
     e) Calculate the IDF values and save the list of (word,IDF) pairs for later use.
 
     '''
-    idf_rdd = idf(unpickled(word_count_per_file_pickle))
-    #print ("idf keys: {}".format(idf_rdd.keys().collect()))
 
 
-    #print("\nidf_rdd: {}".format(idf_rdd.take(2)))
 
 
     '''
     f) (1) Calculate the TF.IDF values
     '''
-    wfidf_rdd = wfidfFromJoining(idf_rdd,unpickled(wf_per_doc_pickle))
+
 
     '''
     f) (2) create a 10000 dimensional vector per document using the hashing trick.
     '''
-    vec_size = 10000
 
-    vectors = vectorise(wfidf_rdd,vec_size)
-    vectors_pickle = pickled(vectors)
 
 
     #print("\nidf_rdd: {}".format(idf_rdd.take(20)))
 
-    logTimeIntervalWithMsg ("input files: {} found texts: {}"
-                            .format(number_of_input_files,vectors.count())) #161
+ #161
 
     '''
 
