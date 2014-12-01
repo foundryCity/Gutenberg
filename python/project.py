@@ -222,14 +222,14 @@ if __name__ == "__main__":
         '''
         counter = 0
         dict = {}
-
         if str(max_size).endswith('k') or str(max_size).endswith('K'):
             max_size = int(max_size[:-1])*1000
-        if str(max_size).endswith('m') or str(max_size).endswith('M'):
+        elif str(max_size).endswith('m') or str(max_size).endswith('M'):
             max_size = int(max_size[:-1])*1000000
-        if str(max_size).endswith('g') or str(max_size).endswith('G'):
+        elif str(max_size).endswith('g') or str(max_size).endswith('G'):
             max_size = int(max_size[:-1])*1000000
-
+        elif max_size:
+            max_size = int(max_size)
 
         def nameOfFile(filepath):
             return os.path.splitext(os.path.basename(path))[0]
@@ -1001,7 +1001,7 @@ if __name__ == "__main__":
         if numPartitions:
             rdd = rdd.reduceByKey(add,numPartitions)
         else:
-            dd = rdd.reduceByKey(add)
+            rdd = rdd.reduceByKey(add)
         #print("\nreduce: {}".format(rdd.collect()))
 
         rdd = rdd.map(lambda x:(x[0],math.log(number_of_documents/float(x[1]),2)))
@@ -1033,7 +1033,7 @@ if __name__ == "__main__":
         #print("\nreduceByKey: {}".format(rdd.collect()))
         return rdd
 
-    def     wfidfFromJoining(idf_rdd,wf_per_doc,numPartitions=None):
+    def wfidfFromJoining(idf_rdd,wf_per_doc,numPartitions=None):
         logTimeIntervalWithMsg("wfidfFromJoining: starting...")
         if numPartitions:
             rdd = idf_rdd.join(wf_per_doc,numPartitions)
@@ -1243,7 +1243,7 @@ if __name__ == "__main__":
         return rdd
 
 
-    def rddWithHeadersRemovedIndexedByID(rdd,max_file_size, rx_id, rx_body_text,rx_header,rx_smallprint,rx_footer,rx_encoding, regex_filters=None):
+    def rddWithHeadersRemovedIndexedByID(rdd,max_size, rx_id, rx_body_text,rx_header,rx_smallprint,rx_footer,rx_encoding, regex_filters=None):
         """
         b)From the text files you need to remove the header.
         The last line of the header starts and ends with ***.
@@ -1252,7 +1252,17 @@ if __name__ == "__main__":
         where ID is a natural number.
         return: [(book_id,(encoding_val,txt))...]
         """
-        rdd = rdd.map(lambda x:extractIdAndBodyTextWithFilters(x[1],max_file_size,rx_id,rx_body_text,rx_header,rx_smallprint,rx_footer,rx_encoding, regex_filters)) \
+
+        if str(max_size).endswith('k') or str(max_size).endswith('K'):
+            max_size = int(max_size[:-1])*1000
+        elif str(max_size).endswith('m') or str(max_size).endswith('M'):
+            max_size = int(max_size[:-1])*1000000
+        elif str(max_size).endswith('g') or str(max_size).endswith('G'):
+            max_size = int(max_size[:-1])*1000000
+        elif max_size:
+            max_size = int(max_size)
+
+        rdd = rdd.map(lambda x:extractIdAndBodyTextWithFilters(x[1],max_size,rx_id,rx_body_text,rx_header,rx_smallprint,rx_footer,rx_encoding, regex_filters)) \
                   .filter(lambda (iebook_id,txt_tuple): iebook_id is not "_")
         return rdd
 
@@ -1457,9 +1467,7 @@ if __name__ == "__main__":
     text_path = parsed_args['t'] if 't' in parsed_args else sys.argv[1]
     stop_list_path = parsed_args['s'] if 's' in parsed_args else []
     filter_files = parsed_args['f'] if 'f' in parsed_args else None
-    max_file_size = int(parsed_args['max']) if 'max'in parsed_args else None
-    max_file_size = int(parsed_args['maxk'])*1000 if 'maxk'in parsed_args else None
-    max_file_size = int(parsed_args['maxm'])*1000*1000 if 'maxm'in parsed_args else None
+    max_file_size = parsed_args['max'] if 'max'in parsed_args else None
 
     decode_unicode = parsed_args['d'] if 'd' in parsed_args else None
     cores = int(parsed_args['c']) if 'c' in parsed_args else 2
@@ -1586,7 +1594,7 @@ if __name__ == "__main__":
         if batch_processing > 0:
             batch_size=batch_processing
             print ("batch_size {}".format(batch_size))
-            input_files = arrayOfInputFiles(text_path,'100m')
+            input_files = arrayOfInputFiles(text_path,max_file_size)
             number_of_input_files = len(input_files)
             rdd_batch = sc.parallelize([])
             wcpf_pickle_names = []
