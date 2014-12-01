@@ -1602,6 +1602,8 @@ if __name__ == "__main__":
 
             counter = 0
             batch_number = 0
+            start_batch = 0
+            start_counter = 0
             for file in input_files:
                 print counter,
                 batch_exists = 0
