@@ -254,11 +254,13 @@ if __name__ == "__main__":
                     filesize = int(os.path.getsize(filepath))
                     if filesize > max_size:
                         #print "skipping file {} as size {} is greater than max: {}".format(filepath,filesize,max_size)
+                        print '>',
                         continue
                 key = ebookIdFromFileName(file)
-
+                print '<',
                 if key in blacklist_ids:
                         #print "excluding from blacklist: {}".format(filepath)
+                        print '-'
                         continue
                 if key not in dict:
                     dict[key] = {}
@@ -271,7 +273,7 @@ if __name__ == "__main__":
                     filesize2 = int(os.path.getsize(filepath))
                     if filesize1 == filesize2:
                        #print ("DUPE file, so not storing:\n{} \n{}".format(dict[key],filepath ))
-                       print 'd',
+                       print '=',
                     else:
                         counter +=1
                         filekey = "{}_{}".format( ebookIdFromFileName(file), counter)
@@ -289,7 +291,7 @@ if __name__ == "__main__":
                 #dict[key][file].append(os.path.join(location,file))
 
         #print ("input files:")
-        pprint(dict)
+        #pprint(dict)
         print ("number of files: {}".format(len(dict)))
 
         return dict.values()
@@ -751,7 +753,7 @@ if __name__ == "__main__":
 
 
 
-    def wordCountPerFile(rdd,numPartitions):
+    def wordCountPerFile(rdd,numPartitions=None):
         """
         :param rdd: rdd of (file,word) tuples
         :return:rdd of (file, [(word, count),(word, count)...]) tuples
@@ -764,7 +766,9 @@ if __name__ == "__main__":
 
         #logTimeIntervalWithMsg('##### GETTING THE  ((file,word),n)\
         # WORDCOUNT PER (DOC, WORD) #####')
-        result = wcf.reduceByKey(add,numPartitions)
+        if numPartitions:result = wcf.reduceByKey(add,numPartitions)
+        else: result = wcf.reduceByKey(add)
+
         #print ("wcf: {}".format(result.take(1)))
 
         #logTimeIntervalWithMsg('##### REARRANGE AS  (file, [(word, count)])  #####')
@@ -772,7 +776,8 @@ if __name__ == "__main__":
         #print ("wordcount: {}".format(result.take(1)))
         #logTimeIntervalWithMsg ('##### CONCATENATE (WORD,COUNT) LIST PER FILE \
         #       AS  (file, [(word, count),(word, count)...])  #####')
-        result = result.reduceByKey(add,numPartitions)
+        if numPartitions:result = result.reduceByKey(add,numPartitions)
+        else:result = result.reduceByKey(add)
         #logTimeIntervalWithMsg ('finished wordCountPerFile')
 
         #print ("\n\nwordcount: {}".format(result.take(1)))
@@ -827,15 +832,17 @@ if __name__ == "__main__":
              rddOfMetaFiles(sub_path)
 
 
-    def rddOfSingleTextFileProcessedByFile(filepath,numPartitions):
+    def rddOfSingleTextFileProcessedByFile(filepath,numPartitions=None):
         textfile_rdd = sc.textFile(filepath)
         #print ("\ntextfile_rdd \n{}".format(textfile_rdd.collect()))
 
         textfile_glom_rdd = textfile_rdd.glom().map(lambda line:"\n".join(line)).filter(lambda x:x is not '')
         #print ("\n\ntextfile_glom_rdd \n{}".format(textfile_glom_rdd.collect()))
 
-
-        result = textfile_glom_rdd.map(lambda x: (filepath,x)).reduceByKey(add,numPartitions)
+        if numPartitions:
+            result = textfile_glom_rdd.map(lambda x: (filepath,x)).reduceByKey(add,numPartitions)
+        else:
+            result = textfile_glom_rdd.map(lambda x: (filepath,x)).reduceByKey(add)
         #print ("\n\nresult \n{}".format(result.collect()))
         return result
 
@@ -972,7 +979,7 @@ if __name__ == "__main__":
 
 
 
-    def idf(word_count_per_file_rdd,number_of_documents, numPartitions):
+    def idf(word_count_per_file_rdd,number_of_documents, numPartitions=None):
         """
         :param rdd: array of (file,[(word,count),(word,count)...] )
         :return: idf: array of [( word,idf)] ) where idf = log (N/doc-frequency)
@@ -991,8 +998,10 @@ if __name__ == "__main__":
         rdd = rdd.map(lambda x:(x[0],1))
         #print("\nmap: {}".format(rdd.collect()))
         #logTimeIntervalWithMsg("idf: reduceByKey...")
-
-        rdd = rdd.reduceByKey(add,numPartitions)
+        if numPartitions:
+            rdd = rdd.reduceByKey(add,numPartitions)
+        else:
+            dd = rdd.reduceByKey(add)
         #print("\nreduce: {}".format(rdd.collect()))
 
         rdd = rdd.map(lambda x:(x[0],math.log(number_of_documents/float(x[1]),2)))
@@ -1002,7 +1011,7 @@ if __name__ == "__main__":
 
         return rdd
 
-    def wordFreqPerDoc(word_count_per_file_rdd, numPartitions):
+    def wordFreqPerDoc(word_count_per_file_rdd, numPartitions=None):
 
         #print("\nwordFreqPerDoc input: {}".format(word_count_per_file_rdd.collect()))
         #logTimeIntervalWithMsg("wordFreqPerDoc: starting")
@@ -1016,14 +1025,21 @@ if __name__ == "__main__":
         #rdd = rdd.flatMap()
         #print("\nflatMap: {}".format(rdd.collect()))
         #logTimeIntervalWithMsg("wordFreqPerDoc: reduceByKey...")
-        rdd = rdd.reduceByKey(add,numPartitions)
+        if numPartitions:
+            rdd = rdd.reduceByKey(add,numPartitions)
+        else:
+            rdd = rdd.reduceByKey(add)
         #logTimeIntervalWithMsg("wordFreqPerDoc: finished")
         #print("\nreduceByKey: {}".format(rdd.collect()))
         return rdd
 
-    def wfidfFromJoining(idf_rdd,wf_per_doc,numPartitions):
+    def     wfidfFromJoining(idf_rdd,wf_per_doc,numPartitions=None):
         logTimeIntervalWithMsg("wfidfFromJoining: starting...")
-        rdd = idf_rdd.join(wf_per_doc,numPartitions)
+        if numPartitions:
+            rdd = idf_rdd.join(wf_per_doc,numPartitions)
+        else:
+            rdd = idf_rdd.join(wf_per_doc)
+
         #print("\njoin: {}".format(rdd.collect()))
 
         rdd = rdd.map(lambda x:(x[0],[(tuple[0],(x[1][0]*tuple[1]))  for tuple in x[1][1]]))
@@ -1032,8 +1048,11 @@ if __name__ == "__main__":
         rdd = rdd.flatMap(lambda x: [(tuple[0],[(x[0],tuple[1])]) for tuple in x[1] ])
         #print("\nflatMap: {}".format(rdd.collect()))
         logTimeIntervalWithMsg("wfidfFromJoining: reduceByKey...")
+        if numPartitions:
+            rdd = rdd.reduceByKey(add,numPartitions)
+        else:
+            rdd = rdd.reduceByKey(add)
 
-        rdd = rdd.reduceByKey(add,numPartitions)
         #print("\nreduceByKey: {}".format(rdd.collect()))
         logTimeIntervalWithMsg("wfidfFromJoining: finished")
 
@@ -1129,7 +1148,7 @@ if __name__ == "__main__":
          return splitfilter
 
 
-    def processRDD(rdd, stop_list_path, numPartitions):
+    def processRDD(rdd, stop_list_path, numPartitions=None):
         """
         :param rdd:  rdd as read from filesystem ('filename','file_contents')
         :param stop_list_path: [list, of, stop, words]
@@ -1482,7 +1501,7 @@ if __name__ == "__main__":
     #sparkConf.set("spark.deploy.recoveryDirectory",recoveryDir)
 
     sc = SparkContext(conf=sparkConf)
-
+    parallelism = None
 
     logTimeIntervalWithMsg ("{}".format(parsed_args))
     logTimeIntervalWithMsg("sparkConf.toDebugString() {}".format(sparkConf.toDebugString()))
@@ -1674,7 +1693,7 @@ if __name__ == "__main__":
             word_count_per_file_rdd = sc.parallelize([])
 
             for name in wcpf_pickle_names:
-                print ("\nwcpfPickleName: \n{}".format(name))
+                #print ("\nwcpfPickleName: \n{}".format(name))
                 unpickled_rdd = unpickle(sc,name)
                 #print ("\nunpickled_rdd: \n{}".format(unpickled_rdd.collect()))
                 word_count_per_file_rdd = word_count_per_file_rdd.union(unpickled_rdd)
@@ -1684,7 +1703,7 @@ if __name__ == "__main__":
 
             wf_per_doc_rdd = sc.parallelize([])
             for name in wfpd_pickle_names:
-                print ("\nwfpd_pickle_name: \n{}".format(name))
+                #print ("\nwfpd_pickle_name: \n{}".format(name))
                 unpickled_rdd = unpickle(sc,name)
                 #print ("\nunpickled_rdd: \n{}".format(unpickled_rdd.collect()))
                 wf_per_doc_rdd = wf_per_doc_rdd.union(unpickled_rdd)
@@ -1714,8 +1733,8 @@ if __name__ == "__main__":
 
         vector_pickle = pickle(vectors,vector_pickle)
 
-        keys = vectors.keys().collect()
-        print (keys)
+        #keys = vectors.keys().collect()
+        #print (keys)
     logTimeIntervalWithMsg ("\ninput files: {} found texts: {}"
                             .format(number_of_input_files,vectors.count()))
 
