@@ -26,6 +26,9 @@ import shutil
 
 from unidecode import unidecode
 
+
+
+
 ' THE MAIN LOOP '
 
 if __name__ == "__main__":
@@ -158,6 +161,7 @@ if __name__ == "__main__":
         return result
 
     def numberOfInputFiles(path):
+
         count = 0
         (location, folders, files) = walk(path).next()
         count += len(files)
@@ -301,7 +305,7 @@ if __name__ == "__main__":
     '''OUTPUT'''
 
     def pickle(rdd, name=None,delete_files=0):
-        #logfuncWithVals()
+        logfuncWithVals()
 
         """
 
@@ -1062,26 +1066,7 @@ if __name__ == "__main__":
         return 1 if len(x) % 2 == 1 else -1
 
 
-    def makeHashTable():
-        counter = [0]
-        def hashTable(tupleList, hashtable_size):
-            '''
-            :param tupleList: list of tuples [(word,count),(word,count)...]
-            :param hashtable_size: int size of hash array
-            :return:hashTable
-            '''
-            #logfuncWithArgs()
-            #counter[0] += 1
-            #print '#',
-            hash_table = [0] * hashtable_size
-            for (word, count)in tupleList:
-                x = (hash(word) % hashtable_size) if hashtable_size else 0
-                hash_table[x] = hash_table[x] + sign_hash(word) * count
-            result = map(lambda x: abs(x), hash_table)
-            #print("\nhashTable: {}".format(result))
 
-            return result
-        return hashTable
 
         # def hashTable(tupleList, hashtable_size,hashTable):
         # '''
@@ -1108,12 +1093,38 @@ if __name__ == "__main__":
         :return:hashTable per doc rdd   [(docID, [vector]...]
 
         '''
-        hashTable = makeHashTable()
+
+        def makeHashTable():  #failed attempt to use a closure as a counter
+            counter = [0]
+            def hashTable(id, tupleList, hashtable_size):
+                '''
+                :param tupleList: list of tuples [(word,count),(word,count)...]
+                :param hashtable_size: int size of hash array
+                :return:hashTable
+                '''
+                #logfuncWithArgs()
+                counter[0] += 1
+                #print "#{} ".format(counter[0]),
+                print "#{} ".format(id),
+                hash_table = [0] * hashtable_size
+                for (word, count)in tupleList:
+                    x = (hash(word) % hashtable_size) if hashtable_size else 0
+                    hash_table[x] = hash_table[x] + sign_hash(word) * count
+                result = map(lambda x: abs(x), hash_table)
+                #print("\nhashTable: {}".format(result))
+
+                return result
+            return hashTable
+
+
+        vector = makeHashTable()
         #logTimeIntervalWithMsg("vectorise...")
         #print("size of rdd to vectorise:{}",format(rdd.count()))
         #pprint(rdd.take(3))
-        rdd = rdd.map (lambda x:(x[0],hashTable(x[1],vec_size)))
-        print("vectorised")
+        print("vectorising... size:{}".format(rdd.count()))
+        rdd = rdd.map (lambda x:(x[0],vector(x[0],x[1],vec_size))).cache()
+        print("vector size:{}".format(rdd.count()))
+
         #print(rdd.sortByKey().take(1))
         #print("\nvectorised: {}".format(rdd.collect()))
 
@@ -1394,6 +1405,22 @@ if __name__ == "__main__":
         return metadata
 
 
+    def pickleNames(path,batch_size):
+
+
+        folder_list = []
+        for file in os.listdir(path):
+            regex_string = "^{}".format(batch_size)
+            if re.search(regex_string,file):
+                folder_list.append(os.path.join(path,file))
+        print ("folder list: {}".format(folder_list))
+        return folder_list
+
+
+
+
+
+
     '''SECTION 3: CLASSIFICATION'''
 
     def arrayOfFrequentSubjects(rdd):
@@ -1464,7 +1491,7 @@ if __name__ == "__main__":
 
 
     line_processing = parsed_args['l'] if 'l' in parsed_args else None
-    text_path = parsed_args['t'] if 't' in parsed_args else sys.argv[1]
+    text_path = parsed_args['t'] if 't' in parsed_args else None
     stop_list_path = parsed_args['s'] if 's' in parsed_args else []
     filter_files = parsed_args['f'] if 'f' in parsed_args else None
     max_file_size = parsed_args['max'] if 'max'in parsed_args else None
@@ -1474,8 +1501,9 @@ if __name__ == "__main__":
     mem = parsed_args['m'] if 'm' in parsed_args else 8
     parrellelismMultiplier = int(parsed_args['p']) if 'p' in parsed_args else 8
     meta_path = parsed_args['meta'] if 'meta' in parsed_args else None
-    pickling = parsed_args['pickle'] if 'pickle' in parsed_args else None
-    batch_processing = int(parsed_args['batch']) if 'batch' in parsed_args else 0
+    pickle_name = parsed_args['pickle'] if 'pickle' in parsed_args else None
+    batch_processing = int(parsed_args['batch']) if 'batch' in parsed_args else 1
+    batch_start = int(parsed_args['b_start']) if 'b_start' in parsed_args else 0
     vector_size = int(parsed_args['vec']) if 'vec' in parsed_args else 10000
 
     number_of_documents = None
@@ -1505,6 +1533,7 @@ if __name__ == "__main__":
 
     sparkConf.set("spark.ui.port","7171")
     sparkConf.set("spark.executor.extraJavaOptions","-XX:+PrintGCDetails -XX:+HeapDumpOnOutOfMemoryError")
+
     #sparkConf.set("spark.deploy.recoveryMode","FILESYSTEM")
     #sparkConf.set("spark.deploy.recoveryDirectory",recoveryDir)
 
@@ -1563,18 +1592,22 @@ if __name__ == "__main__":
     #meta_unpickled = unpickled(sc,meta_pickle)
     #logTimeIntervalWithMsg ("meta_unpickled_size: {}".format(meta_unpickled.count()))
 
-    text_basename =  os.path.splitext(text_path)[0]
-    text_collection_name = os.path.split(text_basename)[1]
+    text_basename =  os.path.splitext(text_path)[0] if text_path else None
+    text_collection_name = os.path.split(text_basename)[1] if text_basename else None
     print("text_path {} text_collection_name: {}".format(text_path,text_collection_name))
-    vector_pickle = "{}/{}/vector_pickle/{}".format(pickle_dir,text_basename,vector_size)
+    if text_basename:
+        vector_pickle = "{}/{}/vector_pickle/{}".format(pickle_dir,text_basename,vector_size)
+    elif pickle_name:
+        vector_pickle = "{}/data/{}/vector_pickle/{}".format(pickle_dir,pickle_name,vector_size)
+
     if os.path.exists(vector_pickle) and delete_files:
         shutil.rmtree(vector_pickle)
     if os.path.exists(os.path.join(vector_pickle,"_SUCCESS")):
         number_of_input_files = 0
-        print ("{} already pickled: {}".format(text_basename,vector_pickle))
+        print ("already pickled: {}".format(vector_pickle))
         vectors = unpickle(sc,vector_pickle)
     else:
-        number_of_input_files = numberOfInputFiles(text_path)
+        number_of_input_files = numberOfInputFiles(text_path) if text_path else 0
         logTimeIntervalWithMsg ("input files: {} ".format(number_of_input_files)) #161
 
         if filter_files:
@@ -1590,9 +1623,9 @@ if __name__ == "__main__":
         rx_encoding = encodingRegex()
         rx_body_text = bodyTextRegex()
         rx_smallprint = endOfSmallPrintRegex()
+        batch_size=batch_processing
+        if batch_processing > 0 and pickle_name is None:
 
-        if batch_processing > 0:
-            batch_size=batch_processing
             print ("batch_size {}".format(batch_size))
             input_files = arrayOfInputFiles(text_path,max_file_size)
             number_of_input_files = len(input_files)
@@ -1600,10 +1633,9 @@ if __name__ == "__main__":
             wcpf_pickle_names = []
             wfpd_pickle_names = []
 
+
             counter = 0
             batch_number = 0
-            start_batch = 0
-            start_counter = 0
             for file in input_files:
                 print counter,
                 batch_exists = 0
@@ -1611,40 +1643,47 @@ if __name__ == "__main__":
                 wfpd_pickle_name = "{}/{}/wfpd/{}_{:05d}".format(pickle_dir,text_basename,batch_size,batch_number)
 
                 #print("counter: {} batch: {} names:{}".format(counter,batch_number,wcpf_pickle_names))
-                if os.path.exists(os.path.join(wcpf_pickle_name,"_SUCCESS")):
-                    #print ("already pickled: {}".format(wcpf_pickle_name))
-                    if os.path.exists(os.path.join(wfpd_pickle_name,"_SUCCESS")):
-                        print '¢',
-
-                        #print ("already pickled: {}".format(wfpd_pickle_name))
-                    else:
-                        #rebuild wfpd from wcpf
-                        wf_per_doc_rdd = wordFreqPerDoc(unpickle(sc,wcpf_pickle_name))
-                        wfpd_pickle_names.append(pickle(wf_per_doc_rdd,wfpd_pickle_name,delete_files))
-                        print '¶',
-                    batch_exists = 1
+                if batch_start > batch_number:
                     counter += 1
 
+                else:
+                    if os.path.exists(os.path.join(wcpf_pickle_name,"_SUCCESS")):
+                        #print ("already pickled: {}".format(wcpf_pickle_name))
+                        if os.path.exists(os.path.join(wfpd_pickle_name,"_SUCCESS")):
+                            print '¢',
 
-                if not batch_exists:
-                    print '+',
-
-                    rdd = rddOfSingleTextFileProcessedByFile(file,parallelism) if not batch_exists else None
-                    rdd = rddWithHeadersRemovedIndexedByIDBatch(rdd, rx_id, rx_body_text,rx_header,rx_smallprint,rx_footer,rx_encoding)
-                    if rdd:
-                        rdd_batch = rdd_batch.union(rdd) if rdd_batch else rdd
+                            #print ("already pickled: {}".format(wfpd_pickle_name))
+                        else:
+                            #rebuild wfpd from wcpf
+                            wf_per_doc_rdd = wordFreqPerDoc(unpickle(sc,wcpf_pickle_name))
+                            wfpd_pickle_names.append(pickle(wf_per_doc_rdd,wfpd_pickle_name,delete_files))
+                            print '¶',
+                        batch_exists = 1
                         counter += 1
+
+
+                    if not batch_exists:
+                        print '+',
+
+                        rdd = rddOfSingleTextFileProcessedByFile(file,parallelism) if not batch_exists else None
+                        rdd = rddWithHeadersRemovedIndexedByIDBatch(rdd, rx_id, rx_body_text,rx_header,rx_smallprint,rx_footer,rx_encoding)
+                        if rdd:
+                            rdd_batch = rdd_batch.union(rdd) if rdd_batch else rdd
+                            counter += 1
+                            #print ("c+s {}".format(counter%batch_size))
 
             #else: print ("rdd is None: {}".format(file))
                 if counter%batch_size == 0:
-                    wcpf_pickle_names.append(wcpf_pickle_name)
-                    wfpd_pickle_names.append(wfpd_pickle_name)
+                    #print("counter%batch_size == 0")
+                    if batch_start <= batch_number:
+                        wcpf_pickle_names.append(wcpf_pickle_name)
+                        wfpd_pickle_names.append(wfpd_pickle_name)
 
-                    if not batch_exists:
-                        word_count_per_file_rdd = processRDD(rdd_batch,stop_list_path,parallelism).cache()
-                        wf_per_doc_rdd = wordFreqPerDoc(word_count_per_file_rdd,parallelism)
-                        pickle(word_count_per_file_rdd,wcpf_pickle_name,delete_files)
-                        pickle(wf_per_doc_rdd,wfpd_pickle_name,delete_files)
+                        if not batch_exists:
+                            word_count_per_file_rdd = processRDD(rdd_batch,stop_list_path,parallelism).cache()
+                            wf_per_doc_rdd = wordFreqPerDoc(word_count_per_file_rdd,parallelism)
+                            pickle(word_count_per_file_rdd,wcpf_pickle_name,delete_files)
+                            pickle(wf_per_doc_rdd,wfpd_pickle_name,delete_files)
 
                     batch_number +=1
                     rdd = sc.parallelize([])
@@ -1670,7 +1709,7 @@ if __name__ == "__main__":
 
             #print ("\n\nunpickled_rdd:{}".format(unpickled_rdd.take(1)))
 
-        else:
+        elif  pickle_name is None:
             print ("file processing")
 
             # file-by-file processing- faster but cannot filter for maximum file sizes
@@ -1697,10 +1736,22 @@ if __name__ == "__main__":
         idf_rdd = None
         wfidf_rdd = None
 
+        if batch_start > 0:
+            print ("batch processing completed from {}".format(batch_start))
+            end_s_time = time()
+            runtime_s = end_s_time - start_s_time
+            filePrint("\ntotal running time:{}".format(runtime_s))
+            filePrint("ended run at {}\n".format(timestring()))
+            exit()
 
 
         if batch_processing > 0:
             word_count_per_file_rdd = sc.parallelize([])
+            if pickle_name:
+                wcpf_dir = "{}/data/{}/wcpf/".format(pickle_dir,pickle_name)
+                wcpf_pickle_names = pickleNames(wcpf_dir,batch_size)
+                wfpd_dir = "{}/data/{}/wfpd/".format(pickle_dir,pickle_name)
+                wfpd_pickle_names = pickleNames(wfpd_dir,batch_size)
 
             for name in wcpf_pickle_names:
                 #print ("\nwcpfPickleName: \n{}".format(name))
@@ -1839,3 +1890,7 @@ if __name__ == "__main__":
 
 
     g_filehandle.close()
+
+
+
+
