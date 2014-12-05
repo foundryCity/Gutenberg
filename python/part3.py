@@ -142,7 +142,7 @@ def reportResultsForCollectedHashOnOneLine(hash_prediction,hashtable_size,use_ha
     cd = confusionDict(hash_prediction)
     cd['time_since_last'] = float(total_time)
 
-    string = "{0}\t{1}\t{2[TP]}\t{2[FP]}\t{2[FN]}\t{2[TN]}\t" \
+    string = "\t{0}\t{1}\t{2[TP]}\t{2[FP]}\t{2[FN]}\t{2[TN]}\t" \
              "{2[Recall]:.3f}\t{2[Precision]:.3f}\t{2[Fmeasure]:.3f}\t{2[Accuracy]:.3f}\t" \
              "{2[time_since_last]:0.3f}"\
         .format(hashtable_size, use_hash_signing, cd)
@@ -207,12 +207,12 @@ def confusionDict(tupleList):
 
 '''SECTION 3: CLASSIFICATION'''
 
-def arrayOfFrequentSubjects(rdd):
+def arrayOfFrequentSubjects(rdd, count=60):
     rdd = rdd.flatMap(lambda x:[(id_txt,1) for id_txt in x[1]])
     rdd = rdd.map(lambda x:(x[0][1],x[1])).reduceByKey(add)
     rdd = rdd.map(lambda x:(x[1],x[0]))
     rdd = rdd.sortByKey(False)
-    rdd = rdd.take(60)
+    rdd = rdd.take(count)
     return rdd
 
 if __name__ == "__main__":
@@ -230,9 +230,7 @@ if __name__ == "__main__":
 
 
 
-    logfile = 'part3_out.txt'
-    logfile = os.path.abspath(logfile)
-    g_filehandle = open(logfile, 'a')
+
 
     parsed_args = parseArgs(sys.argv)
 
@@ -242,10 +240,14 @@ if __name__ == "__main__":
     cores = int(parsed_args['c']) if 'c' in parsed_args else 2
     text_path = parsed_args['t'] if 't' in parsed_args else None
     nb_lambda = float(parsed_args['nbl']) if 'nbl' in parsed_args else 0.1
+    subject_count = int(parsed_args['s']) if 's' in parsed_args else 60
 
     mem = parsed_args['m'] if 'm' in parsed_args else 8
     parrellelismMultiplier = int(parsed_args['p']) if 'p' in parsed_args else 8
 
+    logfile = 'part3_{}_{}_out.txt'.format(texts,vector_size)
+    logfile = os.path.abspath(logfile)
+    g_filehandle = open(logfile, 'a')
 
     masterConfig = "local[{}]".format(cores)
 
@@ -315,7 +317,7 @@ if __name__ == "__main__":
 
     meta_rdd = unpickle(sc,meta_pickle).sortByKey()
     #print ("metapickle :{}".format(meta_rdd.take(2)))
-    frequent_subjects = arrayOfFrequentSubjects(meta_rdd)
+    frequent_subjects = arrayOfFrequentSubjects(meta_rdd,subject_count)
 
 
     #determine the sample folds
@@ -340,12 +342,21 @@ if __name__ == "__main__":
 
 
     validation_results = {}
+    summary_results = {}
+    model_type = "dt" if 'dt' in parsed_args else "nb"
+    model_type_string = "naive bayes"
+    if model_type is "dt":
+        model_type_string = "decision tree"
 
-    for subject in frequent_subjects:
-        subject = subject[1]
+    def subjectName(subject):
         subject_name = subject
         if subject_dict and subject in subject_dict:
             subject_name = (subject_dict[subject])
+        return subject_name
+
+    for subject in frequent_subjects:
+        subject = subject[1]
+        subject_name = subjectName(subject)
         filePrint("\nsubject: {}".format(subject_name))
 
         def mapSubjectInSubjectList (id,subject_list):
@@ -432,12 +443,56 @@ if __name__ == "__main__":
             ltime = time()-lap_time
             reportResultsForCollectedHashOnOneLine(prediction_array,hash_table_size,nb_lambda,ltime, g_filehandle)
 
+            prediction_dict['lap_time'] = ltime
 
             if subject not in validation_results:
                 validation_results[subject] = []
             validation_results[subject].append(prediction_dict)
 
-            '''
+    'summarise results'
+    #print ("validation results")
+    #pprint(validation_results)
+
+    for subject, subject_results in validation_results.iteritems():
+        for hash_prediction in subject_results:
+            if subject in summary_results:
+                summary_results[subject]['prediction'] = summary_results[subject]['prediction']\
+                                                                           .union(hash_prediction['prediction'])
+
+                summary_results[subject]['total_time'] += hash_prediction['lap_time']
+
+                #print summary_results[hash_table_size].take(20)
+            else:
+                summary_results[subject] = {}
+                summary_results[subject]['prediction'] = hash_prediction['prediction']
+                summary_results[subject]['total_time'] = hash_prediction['lap_time']
+
+                #print summary_results[hash_table_size].take(20)
+
+    print ("\nresults for model type: {}".format(model_type_string))
+    #pprint(summary_results)
+
+
+    filePrint ("\n\ncross-validation totals - all folds\n")
+
+    string = "\thSize\tlambda\tTP\tFP\tFN\tTN\t" \
+        "Recall\tPrcsion\tFMeasre\tAcc\tTime"
+    filePrint(string)
+    for subject in summary_results:
+        print "{}".format(subjectName(subject))
+        result = summary_results[subject]
+        prediction = result['prediction']
+        total_time = result['total_time']
+        prediction = prediction.collect()
+        reportResultsForCollectedHashOnOneLine(prediction,hash_table_size,nb_lambda,total_time,g_filehandle)
+
+
+
+
+
+
+
+        '''
 
 
 
