@@ -122,6 +122,28 @@ def logTimeIntervalWithMsg(msg):
         string = ":{0[time_since_start]:7,.3f} :{0[time_since_last]:7,.3f}  {1:}".format(time_deltas, message)
         filePrint(string)
 
+'''OUTPUT'''
+
+def pickle(rdd, name=None,delete_files=0):
+    #logfuncWithVals()
+
+    """
+
+    :rtype : string
+    """
+    if name:
+        if os.path.exists(name) and delete_files:
+            shutil.rmtree(name)
+        if os.path.exists(name):
+            print ("already pickled: {}".format(name))
+            return name
+    else:
+        tmp = NamedTemporaryFile(delete=True)
+        tmp.close()
+        name = tmp.name
+    rdd.saveAsPickleFile(name,3)
+    return name
+
 def unpickle(sc,pickle_name):
     #print ("unpickle_name: {}".format(pickle_name))
     rdd = sc.pickleFile(pickle_name, 3)
@@ -129,7 +151,25 @@ def unpickle(sc,pickle_name):
 
     return rdd
 
+def summariseResultsForCollectedHashOnOneLine(subject,hash_prediction,hashtable_size,use_hash_signing, total_time=0, filehandle=None):
+    '''
+    :param hashPrediction:array of COLLECTED prediction results
+    :param filefilehandle: file to write results to
+    :return:confusionDict
+    '''
+    #logfuncWithArgs()
 
+    cd = confusionDict(hash_prediction)
+    cd['time_since_last'] = float(total_time)
+
+    string = "\t{0}\t{1}\t{2[TP]}\t{2[FP]}\t{2[FN]}\t{2[TN]}\t" \
+             "{2[Recall]:.3f}\t{2[Precision]:.3f}\t{2[Fmeasure]:.3f}\t{2[Accuracy]:.3f}\t" \
+             "{2[time_since_last]:0.3f}"\
+        .format(hashtable_size, use_hash_signing, cd)
+    substring = "{}\t{}".format(string,subject)
+    filePrint(substring)
+
+    return cd
 
 def reportResultsForCollectedHashOnOneLine(hash_prediction,hashtable_size,use_hash_signing, total_time=0, filehandle=None):
     '''
@@ -236,16 +276,29 @@ if __name__ == "__main__":
 
     vector_size =  parsed_args['v'] if 'v' in parsed_args else None
     texts =   parsed_args['t'] if 't' in parsed_args else None
-    folds =  int(parsed_args['folds']) if 'folds' in parsed_args else 4
+    folds =  int(parsed_args['folds']) if 'folds' in parsed_args else 5
     cores = int(parsed_args['c']) if 'c' in parsed_args else 2
     text_path = parsed_args['t'] if 't' in parsed_args else None
-    nb_lambda = float(parsed_args['nbl']) if 'nbl' in parsed_args else 0.1
+
+    model_type = "dt" if 'dt' in parsed_args else "nb"
+    dt_depth = int(parsed_args['dt']) if 'dt' in parsed_args else 0
+    nb_lambda = float(parsed_args['nb']) if 'nb' in parsed_args else 0.1
+    if model_type == "dt":
+        model_type_string = "decision tree"
+        model_variable_label = "depth"
+        model_variable = dt_depth
+    else:
+        model_type_string = "naive bayes"
+        model_variable_label = "lambda"
+        model_variable = nb_lambda
+
+
     subject_count = int(parsed_args['s']) if 's' in parsed_args else 60
 
     mem = parsed_args['m'] if 'm' in parsed_args else 8
     parrellelismMultiplier = int(parsed_args['p']) if 'p' in parsed_args else 8
 
-    logfile = 'part3_{}_{}_out.txt'.format(texts,vector_size)
+    logfile = 'logs/part3_{}_{}_{}_{}.txt'.format(texts,vector_size,model_type,model_variable)
     logfile = os.path.abspath(logfile)
     g_filehandle = open(logfile, 'a')
 
@@ -292,6 +345,10 @@ if __name__ == "__main__":
         logTimeIntervalWithMsg( "ERROR: no pickled vector at address {}".format(vector_file))
         exit(0)
 
+    logTimeIntervalWithMsg ("{}".format(parsed_args))
+    logTimeIntervalWithMsg("sparkConf.toDebugString() {}".format(sparkConf.toDebugString()))
+
+
 
     subject_dict = subjectDict('subjects.txt') if os.path.exists('subjects.txt') else None
     filePrint("\n\nstarted run at {}".format(timestring()))
@@ -327,31 +384,28 @@ if __name__ == "__main__":
 
     random.shuffle(ebook_ids)
     ebook_ids_rdd = sc.parallelize(ebook_ids)
-    ebook_folds = []
+    validation_folds = []
+    test_fold = None
 
 
     fold_length = int(len(ebook_ids)/folds)
     for k in range (0,folds):
         start = k*fold_length
         if k == folds-1:
-             stop = None
+             test_fold = ebook_ids[start:]
         else:
             stop = start+fold_length
-        ebook_fold = ebook_ids[start:stop]
-        ebook_folds.append(ebook_fold)
-
+            validation_fold = ebook_ids[start:stop]
+            validation_folds.append(validation_fold)
 
     validation_results = {}
     summary_results = {}
-    model_type = "dt" if 'dt' in parsed_args else "nb"
-    model_type_string = "naive bayes"
-    if model_type is "dt":
-        model_type_string = "decision tree"
+    test_dict={}
 
     def subjectName(subject):
         subject_name = subject
         if subject_dict and subject in subject_dict:
-            subject_name = (subject_dict[subject])
+            subject_name = "{} / {}".format (subject,subject_dict[subject])
         return subject_name
 
     for subject in frequent_subjects:
@@ -376,6 +430,11 @@ if __name__ == "__main__":
         #print ("filtered :{}".format(filtered.collect()))
 
         id_lbl_Tfi = id_lbl.join(vectors)
+        #remove the test set
+        test_dict[subject] = id_lbl_Tfi.filter(lambda x: x[0] in test_fold).cache()
+        id_lbl_Tfi = id_lbl_Tfi.filter(lambda x: x[0] not in test_fold)
+
+
         #print ("id_lbl_Tfi :{}".format(id_lbl_Tfi.collect()))
 
         #print ("vectors count {} ".format(vectors.cache().count()))  # [(id, (subject, [vector]))]
@@ -386,54 +445,59 @@ if __name__ == "__main__":
 
         test_rdds = []
         train_rdds = []
-        models = []
         array_of_predictions=[]
+        model_for_subject = {}
 
-        string = "hSize\tlambda\tTP\tFP\tFN\tTN\tRecall\tPrcsion\tFMeasre\tAcc\tTime"
+        string = "\thSize\t{}\tTP\tFP\tFN\tTN\tRecall\tPrcsion\tFMeasre\tAcc\tTime".format(model_variable_label)
         filePrint(string)
-        for idx, test_fold in enumerate(ebook_folds):
+        for idx, validation_fold in enumerate(validation_folds):
             lap_time = time()
             remainder_rdd = id_lbl_Tfi
-            test_rdd = remainder_rdd.filter(lambda x: x[0] in test_fold).cache()
+            validation_rdd = remainder_rdd.filter(lambda x: x[0] in validation_fold).cache()
             #print ("test_rdd count:{}".format(test_rdd.count()))#test set
             #remainder_rdd = remainder_rdd.subtract(test_rdd)
-            training_rdd = remainder_rdd.filter(lambda x: x[0] not in ebook_fold)
+            training_rdd = remainder_rdd.filter(lambda x: x[0] not in validation_fold)
             #print ("remainder_rdd count:{}".format(remainder_rdd.cache().count()))#test set
 
 
-
-        # build the modesl
             def labelPoint(tid, lbl_Tfi):
-                #logfuncWithVals()
-                labelPoint = LabeledPoint (lbl_Tfi[0],lbl_Tfi[1])
-                #print ("labelPoint: label {}".format(labelPoint.label))
-                #print ("labelPoint: features {}".format(labelPoint.features))
-                return labelPoint
+                                #logfuncWithVals()
+                                labelPoint = LabeledPoint (lbl_Tfi[0],lbl_Tfi[1])
+                                #print ("labelPoint: label {}".format(labelPoint.label))
+                                #print ("labelPoint: features {}".format(labelPoint.features))
+                                return labelPoint
 
-            labelled_rdd = training_rdd.map(lambda (tid, lbl_Tfi): labelPoint(tid, lbl_Tfi))
-            #print ("labelled_rdd: {}".format(labelled_rdd.collect()))
-
-            model = NaiveBayes.train(labelled_rdd, nb_lambda )
-            #print ("model: {}".format(model))
-            models.append(model)
-
-        #make the predictions
-            def predict (f,x,model):
-                #logfuncWithVals()
-                prediction = model.predict(x[1])
-                #print ("f: {} class: {} prediction {}".format(f,x[0],prediction))
-                return (x[0],prediction)
+            if model_type == 'dt':
+                labelled_rdd = training_rdd.map(lambda (tid, lbl_Tfi): labelPoint(tid, lbl_Tfi))
+                labelled_rdd_pickle = pickle(labelled_rdd)
+                model = DecisionTree.trainClassifier(unpickle(sc,labelled_rdd_pickle), numClasses=2, categoricalFeaturesInfo={},
+                                                     impurity='gini', maxDepth=dt_depth, maxBins=100)
+                labelled_test_rdd = validation_rdd.map(lambda(tid, lbl_Tfi): labelPoint(tid, lbl_Tfi)).cache()
+                prediction_rdd = model.predict(labelled_test_rdd.map(lambda x: x.features))
+                truth_rdd = labelled_test_rdd.map(lambda x: x.label)
+                prediction_rdd = prediction_rdd.zip(truth_rdd)
 
 
-            prediction_rdd = test_rdd.map(lambda (f, x):
-                                          (predict(f,x,model)))
-            #prediction_rdd = test_rdd.map(lambda (f, x):
-             #
-             # '''                           (f, int(model.predict(x).item())))
+            elif model_type == 'nb':
+                labelled_rdd = training_rdd.map(lambda (tid, lbl_Tfi): labelPoint(tid, lbl_Tfi))
+                #print ("labelled_rdd: {}".format(labelled_rdd.collect()))
+                model = NaiveBayes.train(labelled_rdd, nb_lambda )
+                #print ("model: {}".format(model))
+
+            #make the predictions
+                def nbPredict (x,model):
+                    #logfuncWithVals()
+                    prediction = model.predict(x[1])
+                    #print ("f: {} class: {} prediction {}".format(f,x[0],prediction))
+                    return (x[0],prediction)
+
+                prediction_rdd = validation_rdd.map(lambda (f, x):(nbPredict(x,model)))
 
             prediction_dict = {}
             prediction_dict['model'] = model
             prediction_dict['prediction'] = prediction_rdd
+            model_for_subject[subject] = model
+
 
             array_of_predictions.append(prediction_dict)
 
@@ -441,7 +505,7 @@ if __name__ == "__main__":
             prediction_array = prediction_rdd.cache().collect()
             #print("prediction_array: {}".format(prediction_array))
             ltime = time()-lap_time
-            reportResultsForCollectedHashOnOneLine(prediction_array,hash_table_size,nb_lambda,ltime, g_filehandle)
+            reportResultsForCollectedHashOnOneLine(prediction_array,hash_table_size,model_variable,ltime, g_filehandle)
 
             prediction_dict['lap_time'] = ltime
 
@@ -475,20 +539,58 @@ if __name__ == "__main__":
 
     filePrint ("\n\ncross-validation totals - all folds\n")
 
-    string = "\thSize\tlambda\tTP\tFP\tFN\tTN\t" \
-        "Recall\tPrcsion\tFMeasre\tAcc\tTime"
+    string = "\thSize\t{}\tTP\tFP\tFN\tTN\t" \
+        "Recall\tPrcsion\tFMeasre\tAcc\tTime".format(model_variable_label)
     filePrint(string)
-    for subject in summary_results:
-        print "{}".format(subjectName(subject))
+    for subject in frequent_subjects:
+        subject = subject[1]
+        subject_name = subjectName(subject)
         result = summary_results[subject]
         prediction = result['prediction']
         total_time = result['total_time']
         prediction = prediction.collect()
-        reportResultsForCollectedHashOnOneLine(prediction,hash_table_size,nb_lambda,total_time,g_filehandle)
+        summariseResultsForCollectedHashOnOneLine(subject_name,prediction,hash_table_size,model_variable,total_time,g_filehandle)
 
 
 
 
+
+    filePrint ("\n\ntest results\n")
+
+    string = "\thSize\t{}\tTP\tFP\tFN\tTN\t" \
+        "Recall\tPrcsion\tFMeasre\tAcc\tTime".format(model_variable_label)
+    filePrint(string)
+
+    s_time = time()
+    sums_time = 0
+    totals_time = 0
+    cumulative_lap_time = 0
+    for subject in frequent_subjects:
+        subject = subject[1]
+        subject_name = subjectName(subject)
+        test_start_s_time = time()
+        test_prediction = None
+        test_rdd = test_dict[subject]
+        model = model_for_subject[subject]
+        if model_type is "nb":
+            def nbPredict (x,model):
+                    #logfuncWithVals()
+                    prediction = model.predict(x[1])
+                    #print ("f: {} class: {} prediction {}".format(f,x[0],prediction))
+                    return (x[0],prediction)
+
+            prediction_rdd = test_rdd.map(lambda (f, x):(nbPredict(x,model)))
+
+        elif model_type is "dt":
+            labelled_test_rdd = test_rdd.map(lambda(tid, lbl_Tfi): labelPoint(tid, lbl_Tfi)).cache()
+            prediction_rdd = model.predict(labelled_test_rdd.map(lambda x: x.features))
+            truth_rdd = labelled_test_rdd.map(lambda x: x.label)
+            prediction_rdd = prediction_rdd.zip(truth_rdd)
+
+        test_prediction = prediction_rdd.collect()
+        test_end_s_time = time()
+        laps_time = test_end_s_time - test_start_s_time
+        summariseResultsForCollectedHashOnOneLine(subject_name,test_prediction,hash_table_size,model_variable,laps_time,g_filehandle)
 
 
 
