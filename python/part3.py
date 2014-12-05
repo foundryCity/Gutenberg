@@ -401,6 +401,7 @@ if __name__ == "__main__":
     validation_results = {}
     summary_results = {}
     test_dict={}
+    model_for_subject = {}
 
     def subjectName(subject):
         subject_name = subject
@@ -446,7 +447,6 @@ if __name__ == "__main__":
         test_rdds = []
         train_rdds = []
         array_of_predictions=[]
-        model_for_subject = {}
 
         string = "\thSize\t{}\tTP\tFP\tFN\tTN\tRecall\tPrcsion\tFMeasre\tAcc\tTime".format(model_variable_label)
         filePrint(string)

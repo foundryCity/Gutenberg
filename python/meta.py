@@ -7,6 +7,7 @@ from tempfile import NamedTemporaryFile
 import shutil
 from pyspark import SparkContext
 from pyspark.conf import SparkConf
+from pprint import pprint
 
 
 
@@ -78,23 +79,55 @@ def filePrint(string):
         g_filehandle.write("{}\n".format(string))
     print(string)
 
-def subjectTuple(subject_node):
+
+
+def ebookCreator(creator):
+
+    #print ("subject_node: {}".format(subject_node))
+    #3print ("subject_node attrib: {}".format(subject_node.attrib))
+    birth_date = None
+    death_date = None
+    name = None
+    for creator_node in creator:
+        if re.search('agent',creator_node.tag):
+            for agent_node in creator_node:
+                if re.search('name',agent_node.tag):
+                    name = agent_node.text.encode('utf-8')
+                if re.search('birthdate',agent_node.tag,re.UNICODE):
+                    birth_date = int(agent_node.text)
+                if re.search('deathdate',agent_node.tag,re.UNICODE):
+                    death_date = int(agent_node.text)
+    return (birth_date, death_date, name)
+
+def subjectTuple(subject):
     #print ("subject_node: {}".format(subject_node))
     #3print ("subject_node attrib: {}".format(subject_node.attrib))
     subject_id = ""
     subject_txt = ""
-    for Description in subject_node:
-        if re.search('Description',Description.tag):
-            for nodeID in Description.attrib:
+    for subject_node in subject:
+        if re.search('Description',subject_node.tag):
+            for nodeID in subject_node.attrib:
                 if re.search('nodeID',nodeID):
-                    subject_id = Description.attrib[nodeID]
+                    subject_id = subject_node.attrib[nodeID]
                     #print ("ID attrib: {}".format(Description.attrib))
-            for value in Description:
+            for value in subject_node:
                 if re.search('value',value.tag):
                     #print ("value text: {}".format(value.text))
                     subject_txt = value.text
 
     return (subject_id, subject_txt)
+
+def ebookLanguage(language_node):
+    language = None
+    for sub_node in language_node:
+        if re.search('Description',sub_node.tag):
+            for value in sub_node:
+                if re.search('value',value.tag):
+                    #print ("value text: {}".format(value.text))
+                    language = value.text
+    return language
+
+
 
 def ebookID(ebook_node):
     for key in ebook_node.attrib:
@@ -107,6 +140,7 @@ def ebookID(ebook_node):
                 return match.group(1)
         else:
             return None
+
 
 def arrayOfMetadataArrays(path, metadata=[]):
     count = 0
@@ -130,6 +164,42 @@ def arrayOfMetadataArrays(path, metadata=[]):
          sub_path = os.path.join(location, folder)
          arrayOfMetadataArrays(sub_path,metadata)
 
+    return metadata
+
+
+
+
+def arrayOfMetadataDicts(path, metadata=[]):
+    count = 0
+    for location, folder, files in os.walk(path):
+        for file in files:
+            filepath = os.path.join(location, file)
+            if file != '.DS_Store':
+                print str(len(metadata))+' ',
+                #metadict['filename'] = filename
+                tree = ET.parse(filepath)
+                root = tree.getroot()
+                for ebook in root:
+                    ebook_dict = {}
+                    if re.search('ebook',ebook.tag):
+                        ebook_dict['id'] = ebookID(ebook)
+                        subjects=[]
+                        life_span = ()
+                        language = ""
+                        for node in ebook:
+                           if re.search('language',node.tag):
+                               language =  ebookLanguage(node)
+                               ebook_dict['language'] = language if language else None
+                           elif re.search('creator',node.tag):
+                                creator = ebookCreator(node)
+                                ebook_dict['birthdate'] = creator[0]
+                                ebook_dict['deathdate'] = creator[1]
+                                ebook_dict['name'] = creator[2]
+                           if re.search('subject',node.tag):
+                                subjects.append(subjectTuple(node)[1])
+
+                        ebook_dict['subjects'] = subjects
+                        metadata.append(ebook_dict)
     return metadata
 
 
@@ -168,8 +238,15 @@ if __name__ == "__main__":
     cores = parsed_args['c'] if 'c' in parsed_args else 4
     mem = parsed_args['m'] if 'm' in parsed_args else 8
     parrellelismMultiplier = int(parsed_args['p']) if 'p' in parsed_args else 4
+
+    #meta=path_to_meta_directory_for_reading
     meta_path = parsed_args['meta'] if 'meta' in parsed_args else '/data/extra/gutenberg/meta'
+
+    #name=name_of_pickle_file
     pickle_name = parsed_args['name'] if 'name' in parsed_args else 'pickle'
+
+    #type=dict for dictionary version
+    data_type = parsed_args['type'] if 'type' in parsed_args else 'array'
 
 
     masterConfig = "local[4]"
@@ -220,18 +297,26 @@ if __name__ == "__main__":
 
     if os.path.exists(meta_pickle):
         print ("metadata already pickled")
-        metadata = unpickle(sc,meta_pickle).take(101)
+        metadata = unpickle(sc,meta_pickle).takeSample(False,5,1)
         logTimeIntervalWithMsg ("metalen: {}".format(len(metadata)))
-        logTimeIntervalWithMsg ("metasample: {}".format(metadata[100]))
+        logTimeIntervalWithMsg ("metasample: {}".format(metadata[1]))
+        pprint (metadata)
+
         exit(0)
 
+    if data_type == 'dict':
+       metadata = arrayOfMetadataDicts(meta_path)
+    else:
+       metadata = arrayOfMetadataArrays(meta_path)
 
-    metadata = arrayOfMetadataArrays(meta_path)
+
+
     logTimeIntervalWithMsg ("metalen: {}".format(len(metadata)))
     logTimeIntervalWithMsg ("metasample: {}".format(metadata[100]))
 
     meta_pickle = pickle(sc.parallelize(metadata),meta_pickle)
     print ("meta_pickle: {}".format(meta_pickle))
-    #meta_unpickled = unpickled(sc,meta_pickle)
+    meta_unpickled = unpickle(sc,meta_pickle)
+    pprint (meta_unpickled.takeSample(False,5,1))
 
 
