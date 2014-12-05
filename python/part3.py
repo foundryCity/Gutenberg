@@ -339,6 +339,7 @@ if __name__ == "__main__":
         ebook_folds.append(ebook_fold)
 
 
+    validation_results = {}
 
     for subject in frequent_subjects:
         subject = subject[1]
@@ -431,6 +432,10 @@ if __name__ == "__main__":
             ltime = time()-lap_time
             reportResultsForCollectedHashOnOneLine(prediction_array,hash_table_size,nb_lambda,ltime, g_filehandle)
 
+
+            if subject not in validation_results:
+                validation_results[subject] = []
+            validation_results[subject].append(prediction_dict)
 
             '''
 

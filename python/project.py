@@ -1150,7 +1150,7 @@ if __name__ == "__main__":
          counter = [0]
          def splitfilter(iebook_id,words):
              #print '^{`}_{}'.format(timestring(),(counter[0])),
-             #counter[0] += 1
+             counter[0] += 1
              return  ([(iebook_id, remPlural(word))
                                           for word in re.split(wordsplit, words)
                                           if len(word) > 0
@@ -1277,172 +1277,7 @@ if __name__ == "__main__":
                   .filter(lambda (iebook_id,txt_tuple): iebook_id is not "_")
         return rdd
 
-    '''M E T A    D A T A '''
 
-    def ebookID(ebook_node):
-        for key in ebook_node.attrib:
-            if re.search('about',key):
-                id = ebook_node.attrib[key]
-                #return id
-                regex = re.compile(r'ebooks\/(\d+)')
-                match = regex.match(id)
-                if (match):
-                    return match.group(1)
-            else:
-                return None
-
-    def subjectTuple(subject_node):
-        #print ("subject_node: {}".format(subject_node))
-        #3print ("subject_node attrib: {}".format(subject_node.attrib))
-        subject_id = ""
-        subject_txt = ""
-        for Description in subject_node:
-            if re.search('Description',Description.tag):
-                for nodeID in Description.attrib:
-                    if re.search('nodeID',nodeID):
-                        subject_id = Description.attrib[nodeID]
-                        #print ("ID attrib: {}".format(Description.attrib))
-                for value in Description:
-                    if re.search('value',value.tag):
-                        #print ("value text: {}".format(value.text))
-                        subject_txt = value.text
-
-        return (subject_id, subject_txt)
-
-
-    def  subjectDict(subject_node):
-        #print ("subject_node: {}".format(subject_node))
-        #3print ("subject_node attrib: {}".format(subject_node.attrib))
-        subject = {'subject_id':None,'subject_txt':None}
-        for Description in subject_node:
-            if re.search('Description',Description.tag):
-                for nodeID in Description.attrib:
-                    if re.search('nodeID',nodeID):
-                        subject['subject_id'] = Description.attrib[nodeID]
-                        #print ("ID attrib: {}".format(Description.attrib))
-                for value in Description:
-                    if re.search('value',value.tag):
-                        #print ("value text: {}".format(value.text))
-                        subject['subject_txt'] = value.text
-
-        return subject
-
-    def arrayOfMetadataArrays1(path, metadata=[]):
-        count = 0
-        (location, folders, files) = os.walk(path).next()
-        for filename in files:
-            filepath = os.path.join(location, filename)
-            if filename != '.DS_Store':
-                count += 1
-                print str(count)+' ',
-                metaArray = []
-                tree = ET.parse(filepath)
-                root = tree.getroot()
-                for ebook in root:
-                    if re.search('ebook',ebook.tag):
-                        metaArray.append(ebookID(ebook))
-                        metadata.append(metaArray)
-                        metaArray.append([])
-                        for subject in ebook:
-                           if re.search('subject',subject.tag):
-                                  metaArray[1].append(subjectTuple(subject))
-        for folder in folders:
-             sub_path = os.path.join(location, folder)
-             arrayOfMetadataArrays(sub_path,metadata)
-
-        return metadata
-
-
-
-    def arrayOfMetadataArrays(path, metadata=[]):
-        count = 0
-        (location, folders, files) = os.walk(path).next()
-        for filename in files:
-            filepath = os.path.join(location, filename)
-            if filename != '.DS_Store':
-                print str(len(metadata))+' ',
-                #metadict['filename'] = filename
-                tree = ET.parse(filepath)
-                root = tree.getroot()
-                for ebook in root:
-                    if re.search('ebook',ebook.tag):
-                        ebook_id = ebookID(ebook)
-                        subjects=[]
-                        for subject in ebook:
-                           if re.search('subject',subject.tag):
-                                  subjects.append(subjectTuple(subject))
-                        metadata.append((ebook_id,subjects))
-        for folder in folders:
-             sub_path = os.path.join(location, folder)
-             arrayOfMetadataArrays(sub_path,metadata)
-
-        return metadata
-
-
-    def arrayOfMetadata1(path, metadata=[]):
-        count = 0
-        (location, folders, files) = os.walk(path).next()
-        for filename in files:
-            filepath = os.path.join(location, filename)
-            if filename != '.DS_Store':
-                print str(len(metadata))+' ',
-                metadict = {}
-                metadict['filename'] = filename
-                tree = ET.parse(filepath)
-                root = tree.getroot()
-                for ebook in root:
-                    if re.search('ebook',ebook.tag):
-                        metadict['ebook_id'] = ebookID(ebook)
-                        metadata.append(metadict)
-                        metadict['subjects']=[]
-                        for subject in ebook:
-                           if re.search('subject',subject.tag):
-                                  metadict['subjects'].append(subjectDict(subject))
-        for folder in folders:
-             sub_path = os.path.join(location, folder)
-             arrayOfMetadata(sub_path,metadata)
-
-        return metadata
-
-
-    def pickleNames(path,batch_size):
-
-
-        folder_list = []
-        for file in os.listdir(path):
-            regex_string = "^{}".format(batch_size)
-            if re.search(regex_string,file):
-                folder_list.append(os.path.join(path,file))
-        print ("folder list: {}".format(folder_list))
-        return folder_list
-
-
-
-
-
-
-    '''SECTION 3: CLASSIFICATION'''
-
-    def arrayOfFrequentSubjects(rdd):
-        print ("frequentSubjects: {}".format(rdd.take(2)))
-        print ("takemeta: {}".format(rdd.take(2)))
-        rdd = rdd.flatMap(lambda x:[(id_txt,1) for id_txt in x[1]])
-        print ("rdd: {}".format(rdd.take(2)))
-
-        rdd = rdd.map(lambda x:(x[0][1],x[1])).reduceByKey(add)
-        print ("reduceByKey...")
-        pprint (rdd.take(10))
-
-        rdd = rdd.map(lambda x:(x[1],x[0]))
-        print ("map...")
-        pprint (rdd.take(10))
-        rdd = rdd.sortByKey(False)
-        print ("sort...")
-
-        rdd = rdd.take(10)
-        pprint (rdd)
-
-        return rdd
 
     '''INITIALISATION'''
     sys.excepthook = exceptionTraceBack
@@ -1577,19 +1412,7 @@ if __name__ == "__main__":
     '''
 
 
-    meta_pickle = 'data/metapickle'
-    if meta_path and not os.path.exists(meta_pickle):
-        metadata = arrayOfMetadataArrays(meta_path)
-        logTimeIntervalWithMsg ("metalen: {}".format(len(metadata)))
-        meta_pickle = pickle(sc.parallelize(metadata),meta_pickle)
-        print ("meta_pickle: {}".format(meta_pickle))
-        #meta_unpickled = unpickled(sc,meta_pickle)
 
-    else:
-        print ("metadata already pickled")
-
-
-    #meta_unpickled = unpickled(sc,meta_pickle)
     #logTimeIntervalWithMsg ("meta_unpickled_size: {}".format(meta_unpickled.count()))
 
     text_basename =  os.path.splitext(text_path)[0] if text_path else None
