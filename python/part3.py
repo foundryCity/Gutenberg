@@ -166,7 +166,7 @@ def summariseResultsForCollectedHashOnOneLine(subject,hash_prediction,hashtable_
              "{2[Recall]:.3f}\t{2[Precision]:.3f}\t{2[Fmeasure]:.3f}\t{2[Accuracy]:.3f}\t" \
              "{2[time_since_last]:0.3f}"\
         .format(hashtable_size, use_hash_signing, cd)
-    substring = "{}\t{}".format(string,subject)
+    substring = "{}\t{}".format(string,subject[0:20])
     filePrint(substring)
 
     return cd
@@ -247,6 +247,16 @@ def confusionDict(tupleList):
 
 '''SECTION 3: CLASSIFICATION'''
 
+
+
+def arrayOfFrequentSubjectsFromMetaDict(rdd, count=60):
+    rdd = rdd.flatMap(lambda x:[(id_txt,1) for id_txt in x[1]['subjects']])
+    rdd = rdd.reduceByKey(add)
+    rdd = rdd.map(lambda x:(x[1],x[0]))
+    rdd = rdd.sortByKey(False)
+    rdd = rdd.take(count)
+    return rdd
+
 def arrayOfFrequentSubjects(rdd, count=60):
     rdd = rdd.flatMap(lambda x:[(id_txt,1) for id_txt in x[1]])
     rdd = rdd.map(lambda x:(x[0][1],x[1])).reduceByKey(add)
@@ -276,7 +286,7 @@ if __name__ == "__main__":
 
     vector_size =  parsed_args['v'] if 'v' in parsed_args else None
     texts =   parsed_args['t'] if 't' in parsed_args else None
-    folds =  int(parsed_args['folds']) if 'folds' in parsed_args else 5
+    folds =  int(parsed_args['folds']) if 'folds' in parsed_args else 4
     cores = int(parsed_args['c']) if 'c' in parsed_args else 2
     text_path = parsed_args['t'] if 't' in parsed_args else None
 
@@ -338,7 +348,8 @@ if __name__ == "__main__":
 
     sc = SparkContext(conf=sparkConf)
 
-    meta_pickle = 'data/_meta/metapickle'
+
+
     wd_path = '/Volumes/jHome/_new/_cs/_bigdata/proj'
     vector_file = vectorFile(texts,vector_size)
     if  not os.path.exists(vector_file):
@@ -366,15 +377,24 @@ if __name__ == "__main__":
     a) Find the 10 most frequent subjects.
 
     '''
+
     vectors = unpickle(sc,vector_file).cache()
     #print "vectors take 1: {}".format(vectors.take(2))
     hash_table_size = len(vectors.take(1)[0][1])
 
 
+    meta_array = 1
 
-    meta_rdd = unpickle(sc,meta_pickle).sortByKey()
-    #print ("metapickle :{}".format(meta_rdd.take(2)))
-    frequent_subjects = arrayOfFrequentSubjects(meta_rdd,subject_count)
+
+    if meta_array:
+        meta_pickle = 'data/_meta/metapickle'
+        meta_rdd = unpickle(sc,meta_pickle).sortByKey()
+        frequent_subjects = arrayOfFrequentSubjects(meta_rdd,subject_count)
+    else:
+        meta_pickle = 'data/_meta/_new/data8'
+        meta_rdd = unpickle(sc,meta_pickle).sortByKey()
+        frequent_subjects = arrayOfFrequentSubjectsFromMetaDict(meta_rdd, subject_count)
+    print ("frequent subjects: {}".format(frequent_subjects))
 
 
     #determine the sample folds
@@ -386,9 +406,15 @@ if __name__ == "__main__":
     ebook_ids_rdd = sc.parallelize(ebook_ids)
     validation_folds = []
     test_fold = None
+    #print ("ebook_ids_len: {}".format(len(ebook_ids)))
+    #print ("folds_len: {}".format(int(len(ebook_ids)/folds)))
 
+    number_of_ebooks = len(ebook_ids)
 
-    fold_length = int(len(ebook_ids)/folds)
+    if number_of_ebooks < folds:
+        folds = number_of_ebooks
+
+    fold_length = int(number_of_ebooks/folds)
     for k in range (0,folds):
         start = k*fold_length
         if k == folds-1:
@@ -423,20 +449,39 @@ if __name__ == "__main__":
             #print ("id: {} result:{}".format(id,result))
             return (id,result)
 
+        def mapSubjectInSubjectListDict (id,subject_list):
+            #if (random.randrange(100)==0):
+            #print ("subject[1] {}".format(subject[1]))
+            #logfuncWithVals()
+            #subject_names = [subject_name for (subj_code,subject_name) in subject_list]
+            result = 1 if subject in subject_list else 0
+            #print ("id: {} result:{}".format(id,result))
+            return (id,result)
+
         #vectors_ids = [id for (id, val) in vectors.collect()]
         #print ('vectors_ids {}'.format(vectors_ids))
-        id_lbl = meta_rdd.map(lambda (id,subL): mapSubjectInSubjectList(id,subL))
+
+        #[(id,has_subect)...])
+        #print ("meta_rdd :{}".format(meta_rdd.take(5)))
+        if meta_array:
+            id_lbl = meta_rdd.map(lambda (id,subL): mapSubjectInSubjectList(id,subL))
+        else:
+            id_lbl = meta_rdd.map(lambda (id,dict): mapSubjectInSubjectListDict(id,dict['subjects']))
+
+
         #filtered = id_lbl.filter(lambda x: x[0]in vectors_ids)
 
-        #print ("filtered :{}".format(filtered.collect()))
+        #print ("id_lbl :{}".format(id_lbl.collect()))
+        #print ("vectors :{}".format(vectors.collect()))
 
         id_lbl_Tfi = id_lbl.join(vectors)
+        #print ("id_lbl_Tfi :{}".format(id_lbl_Tfi.take(2)))
+
         #remove the test set
         test_dict[subject] = id_lbl_Tfi.filter(lambda x: x[0] in test_fold).cache()
         id_lbl_Tfi = id_lbl_Tfi.filter(lambda x: x[0] not in test_fold)
 
 
-        #print ("id_lbl_Tfi :{}".format(id_lbl_Tfi.collect()))
 
         #print ("vectors count {} ".format(vectors.cache().count()))  # [(id, (subject, [vector]))]
 
@@ -457,7 +502,7 @@ if __name__ == "__main__":
             #print ("test_rdd count:{}".format(test_rdd.count()))#test set
             #remainder_rdd = remainder_rdd.subtract(test_rdd)
             training_rdd = remainder_rdd.filter(lambda x: x[0] not in validation_fold)
-            #print ("remainder_rdd count:{}".format(remainder_rdd.cache().count()))#test set
+            #print ("training_rdd: {}".format(training_rdd.collect()))
 
 
             def labelPoint(tid, lbl_Tfi):

@@ -199,7 +199,7 @@ def arrayOfMetadataDicts(path, metadata=[]):
                                 subjects.append(subjectTuple(node)[1])
 
                         ebook_dict['subjects'] = subjects
-                        metadata.append(ebook_dict)
+                        metadata.append((ebook_dict['id'],ebook_dict))
     return metadata
 
 
